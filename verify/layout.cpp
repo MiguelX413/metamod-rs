@@ -90,6 +90,12 @@ int main() {
     std::printf("key_netname %zu\n", offsetof(entvars_t, netname));
     std::printf("key_message %zu\n", offsetof(entvars_t, message));
     std::printf("pfnSzFromIndex %zu\n", offsetof(enginefuncs_t, pfnSzFromIndex));
+    std::printf("KeyValueData %zu %zu\n", sizeof(KeyValueData), alignof(KeyValueData));
+    std::printf("pfnKeyValue %zu\n", offsetof(DLL_FUNCTIONS, pfnKeyValue));
+    std::printf("szClassName %zu\n", offsetof(KeyValueData, szClassName));
+    std::printf("szKeyName %zu\n", offsetof(KeyValueData, szKeyName));
+    std::printf("szValue %zu\n", offsetof(KeyValueData, szValue));
+    std::printf("fHandled %zu\n", offsetof(KeyValueData, fHandled));
     std::printf("NewDllFunctions %zu %zu\n", sizeof(NEW_DLL_FUNCTIONS), alignof(NEW_DLL_FUNCTIONS));
     std::printf("pfnGameShutdown %zu\n", offsetof(NEW_DLL_FUNCTIONS, pfnGameShutdown));
     std::printf("new_dll_version %d\n", NEW_DLL_FUNCTIONS_VERSION);

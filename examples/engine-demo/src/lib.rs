@@ -14,6 +14,15 @@ struct EngineDemo {
     log_tag = "RUSTENGINE"
 )]
 impl Plugin for EngineDemo {
+    const KEYVALUE_PRE: bool = true;
+
+    fn key_value(&mut self, ctx: &mut Context<'_>, event: &KeyValueEvent) {
+        if event.key.as_c_str() == c"classname" {
+            ctx.server()
+                .print(&format!("Map classname: {}", event.value.to_string_lossy()));
+        }
+    }
+
     const LAG_COMPENSATION_PRE: bool = true;
     const LAG_COMPENSATION_POST: bool = true;
 

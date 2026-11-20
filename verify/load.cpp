@@ -14,6 +14,7 @@ static DLL_FUNCTIONS post_hooks{};
 static edict_t player{}, world{}, vacant{};
 static bool discovery_transition;
 static int logged;
+static int keyvalue_logs;
 static bool engine_demo;
 
 static cvar_t *registered_cvar;
@@ -134,6 +135,15 @@ static int index_of_edict(const edict_t *edict) {
 }
 
 static void server_print(const char *message) {
+    if (std::strncmp(message, "Map classname: ", 15) == 0) {
+        assert(engine_demo && keyvalue_logs < 2);
+        assert(logged == (keyvalue_logs == 0 ? 1 : 4));
+        assert(std::strcmp(message, keyvalue_logs == 0
+            ? "Map classname: worldspawn\n" : "Map classname: deferred\n") == 0);
+        ++keyvalue_logs;
+        std::fputs(message, stdout);
+        return;
+    }
     static const char *hello_output[] = {
         "Hello from Rust Metamod\n",
         "Rust StartFrame hook ran\n",
@@ -177,6 +187,14 @@ static void server_print(const char *message) {
         assert(logged == 2 && globals.mres == MRES_SUPERCEDE);
         transient[0] = 'X';
         args[1] = nullptr;
+        char key[] = "classname";
+        char value[] = "deferred";
+        KeyValueData data{"fixture", key, value, 17};
+        hooks.pfnKeyValue(&player, &data);
+        assert(data.fHandled == 17 && keyvalue_logs == 1);
+        assert(globals.mres == MRES_IGNORED);
+        key[0] = 'X';
+        value[0] = 'X';
     }
 }
 
@@ -271,6 +289,21 @@ int main(int argc, char **argv) {
     assert(version == NEW_DLL_FUNCTIONS_VERSION && !new_hooks.pfnGameShutdown);
     assert(functions.pfnGetNewDLLFunctions(&new_hooks, &version));
     assert(new_hooks.pfnGameShutdown && !new_hooks.pfnShouldCollide);
+    assert((hooks.pfnKeyValue != nullptr) == engine_demo && !post_hooks.pfnKeyValue);
+    if (engine_demo) {
+        KeyValueData data{nullptr, "classname", "worldspawn", 17};
+        hooks.pfnKeyValue(&world, &data);
+        assert(keyvalue_logs == 1 && data.fHandled == 17 && globals.mres == MRES_IGNORED);
+        char oversized[4097];
+        std::memset(oversized, 'x', sizeof(oversized));
+        oversized[sizeof(oversized) - 1] = '\0';
+        data.szValue = oversized;
+        hooks.pfnKeyValue(&world, &data);
+        data.szValue = nullptr;
+        hooks.pfnKeyValue(&world, &data);
+        hooks.pfnKeyValue(&world, nullptr);
+        assert(keyvalue_logs == 1 && data.fHandled == 17 && globals.mres == MRES_IGNORED);
+    }
     hooks.pfnServerActivate(nullptr, 0, 0);
     globals.mres = MRES_UNSET;
     post_hooks.pfnServerActivate(nullptr, 0, 0);
@@ -343,6 +376,7 @@ int main(int argc, char **argv) {
     } else {
         assert(logged == 3 && !command && !registered_cvar);
     }
+    assert(keyvalue_logs == (engine_demo ? 2 : 0));
     const int expected_logs = engine_demo ? 16 : 3;
     globals.mres = MRES_UNSET;
     hooks.pfnClientDisconnect(&player);

@@ -18,3 +18,12 @@ pub enum PostHookResult<T> {
     Handled,
     Override(T),
 }
+
+/// Owned inputs observed immediately before GameDLL keyvalue dispatch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyValueEvent {
+    /// The native classname, if supplied. It may be absent early in loading.
+    pub classname: Option<std::ffi::CString>,
+    pub key: std::ffi::CString,
+    pub value: std::ffi::CString,
+}

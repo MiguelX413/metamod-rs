@@ -112,6 +112,20 @@ contain an engine marker such as a pending or bot value. Treat it as engine
 information, with session validity checked separately when using a saved
 snapshot.
 
+### GameDLL keyvalue events
+
+Set `Plugin::KEYVALUE_PRE` to `true` and implement `Plugin::key_value` to
+observe GameDLL keyvalue inputs, including those consumed before map
+activation. `KeyValueEvent` owns the optional classname and the key and
+value as C strings. Null required inputs and payloads exceeding a combined
+4,096-byte read budget are skipped. The budget includes terminators.
+
+The hook leaves the native data and GameDLL result unchanged. During
+reentry, the SDK copies the inputs before returning to the engine and
+delivers the observation through the deferred queue. No edict pointer or
+map-bound handle is carried by the event, so it can represent inputs that
+arrive before the map is active. The engine demo logs `classname` keys.
+
 ### Tracing and entity handles
 
 Use `ctx.server().trace_line(start, end, options)` or

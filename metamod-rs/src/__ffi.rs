@@ -4,7 +4,7 @@
 pub use metamod_sys::*;
 
 use crate::{
-    Command, Context, HookResult, PlayerId, PlayerSlot, Plugin, PostHookResult,
+    Command, Context, HookResult, KeyValueEvent, PlayerId, PlayerSlot, Plugin, PostHookResult,
     engine::{self, Engine},
 };
 use raw::{NEW_DLL_FUNCTIONS, edict_t};
@@ -50,6 +50,7 @@ enum Event {
     Join(PlayerId),
     Disconnect(PlayerId),
     Command(Command),
+    KeyValue(KeyValueEvent),
 }
 
 // Bound both the queue and the total work, even if each callback only
@@ -322,6 +323,7 @@ unsafe extern "C" fn entity_api<P: Plugin>(table: *mut DllFunctions, version: *m
             ENTITY_INTERFACE,
             DllFunctions {
                 pfnStartFrame: Some(start_frame::<P>),
+                pfnKeyValue: P::KEYVALUE_PRE.then_some(key_value::<P>),
                 pfnAllowLagCompensation: P::LAG_COMPENSATION_PRE.then_some(lag_pre::<P>),
                 pfnServerActivate: Some(begin_map),
                 pfnServerDeactivate: Some(server_deactivate::<P>),
@@ -556,6 +558,7 @@ fn drain<P: Plugin>() {
             Event::Join(player) => plugin.player_join(context, player),
             Event::Disconnect(player) => plugin.player_disconnect(context, player),
             Event::Command(command) => plugin.server_command(context, &command),
+            Event::KeyValue(event) => plugin.key_value(context, &event),
         });
         if result.is_none() {
             disable_callbacks();
@@ -620,6 +623,39 @@ unsafe extern "C" fn server_command<P: Plugin>() {
         {
             submit::<P>(Event::Command(command));
         }
+    });
+}
+
+unsafe extern "C" fn key_value<P: Plugin>(_: *mut edict_t, data: *mut raw::KeyValueData) {
+    hook(|| {
+        if data.is_null() || !registration_available() {
+            return;
+        }
+        // SAFETY: Metamod supplies initialized input fields and readable
+        // strings for this invocation. Do not read or write fHandled.
+        let (class, key, value) =
+            unsafe { ((*data).szClassName, (*data).szKeyName, (*data).szValue) };
+        let mut remaining = engine::MAX_ENGINE_STRING;
+        let mut copy = |string| {
+            // SAFETY: Each input is live until the first NUL or the cap.
+            // Snapshot all strings before dispatch can call the engine.
+            let owned = unsafe { engine::copy_string(string, remaining) }?;
+            remaining -= owned.as_bytes_with_nul().len();
+            Some(owned)
+        };
+        let Some(key) = copy(key) else { return };
+        let Some(value) = copy(value) else { return };
+        let classname = if class.is_null() {
+            None
+        } else {
+            let Some(classname) = copy(class) else { return };
+            Some(classname)
+        };
+        submit::<P>(Event::KeyValue(KeyValueEvent {
+            classname,
+            key,
+            value,
+        }));
     });
 }
 

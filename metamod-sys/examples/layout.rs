@@ -199,6 +199,16 @@ fn main() {
         offset_of!(EngineFunctions, pfnSzFromIndex)
     );
     println!(
+        "KeyValueData {} {}",
+        size_of::<raw::KeyValueData>(),
+        align_of::<raw::KeyValueData>()
+    );
+    println!("pfnKeyValue {}", offset_of!(DllFunctions, pfnKeyValue));
+    println!("szClassName {}", offset_of!(raw::KeyValueData, szClassName));
+    println!("szKeyName {}", offset_of!(raw::KeyValueData, szKeyName));
+    println!("szValue {}", offset_of!(raw::KeyValueData, szValue));
+    println!("fHandled {}", offset_of!(raw::KeyValueData, fHandled));
+    println!(
         "NewDllFunctions {} {}",
         size_of::<raw::NEW_DLL_FUNCTIONS>(),
         align_of::<raw::NEW_DLL_FUNCTIONS>()

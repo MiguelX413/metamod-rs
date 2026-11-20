@@ -10,7 +10,7 @@ mod runtime;
 mod trace;
 
 pub use engine::{Command, EngineError, PlayerInfo};
-pub use hooks::{HookResult, PostHookResult};
+pub use hooks::{HookResult, KeyValueEvent, PostHookResult};
 pub use trace::{
     EntityError, EntityHandle, EntityInfo, EntityKeyValues, EntityKind, EntitySpatial, Hull,
     TraceError, TraceMonsters, TraceOptions, TracePlane, TraceResult,
@@ -26,9 +26,9 @@ pub mod prelude {
     pub use crate::metamod_plugin;
     pub use crate::{
         Command, Context, EngineError, EntityError, EntityHandle, EntityInfo, EntityKeyValues,
-        EntityKind, EntitySpatial, HookResult, Hull, Metadata, PlayerId, PlayerInfo, PlayerSlot,
-        Plugin, PostHookResult, Server, TraceError, TraceMonsters, TraceOptions, TracePlane,
-        TraceResult, export_plugin,
+        EntityKind, EntitySpatial, HookResult, Hull, KeyValueEvent, Metadata, PlayerId, PlayerInfo,
+        PlayerSlot, Plugin, PostHookResult, Server, TraceError, TraceMonsters, TraceOptions,
+        TracePlane, TraceResult, export_plugin,
     };
 }
 
@@ -74,6 +74,12 @@ pub trait Plugin: Default + 'static {
     ) -> PostHookResult<bool> {
         PostHookResult::Ignored
     }
+
+    /// Opt into observing GameDLL keyvalue inputs, including before map activation.
+    const KEYVALUE_PRE: bool = false;
+
+    /// Observe copied inputs. Reentrant observations may be delivered later.
+    fn key_value(&mut self, _context: &mut Context<'_>, _event: &KeyValueEvent) {}
 
     fn start_frame(&mut self, _context: &mut Context<'_>) {}
 
