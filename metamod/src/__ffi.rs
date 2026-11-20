@@ -510,7 +510,7 @@ fn player_slot(edict: *mut edict_t) -> Option<PlayerSlot> {
     // SAFETY: Metamod supplied a live edict for this synchronous lookup.
     let index = unsafe { index(edict) };
     if INDEX_LOOKUP.replace(None) == Some(false) {
-        PlayerSlot::from_index(index)
+        PlayerSlot::new(index)
     } else {
         None
     }
@@ -669,12 +669,24 @@ mod tests {
     #[test]
     fn public_player_slot_constructor_checks_the_engine_index_range() {
         assert_eq!(PlayerSlot::new(0), None);
-        assert_eq!(PlayerSlot::new(7).unwrap().get(), 7);
-        assert_eq!(
-            PlayerSlot::new(i32::MAX as u32).unwrap().get(),
-            i32::MAX as u32
-        );
-        assert_eq!(PlayerSlot::new(i32::MAX as u32 + 1), None);
+        let slot = PlayerSlot::new(7).unwrap();
+        assert_eq!(slot.get(), 7);
+        assert_eq!(PlayerSlot::new(slot.get()), Some(slot));
+        assert_eq!(PlayerSlot::new(i32::MAX).unwrap().get(), i32::MAX);
+        assert_eq!(PlayerSlot::new(-1), None);
+        assert_eq!(PlayerSlot::new(i32::MIN), None);
+    }
+
+    #[test]
+    fn player_slot_traits_round_trip_and_reject_invalid_indices() {
+        for index in [1, 7, i32::MAX] {
+            let slot = PlayerSlot::try_from(index).unwrap();
+            assert_eq!(Some(slot), PlayerSlot::new(index));
+            assert_eq!(i32::from(slot), index);
+        }
+        for index in [0, -1, i32::MIN] {
+            assert!(PlayerSlot::try_from(index).is_err());
+        }
     }
 
     #[test]
@@ -689,7 +701,7 @@ mod tests {
 
             fn start_frame(&mut self, ctx: &mut Context<'_>) {
                 self.trace.push("frame");
-                let slot = PlayerSlot::from_index(7).unwrap();
+                let slot = PlayerSlot::new(7).unwrap();
                 let player = EVENTS
                     .with(|events| events.borrow_mut().join(slot))
                     .unwrap();
@@ -756,7 +768,7 @@ mod tests {
 
     #[test]
     fn session_ids_expire_on_disconnect_slot_reuse_and_map_boundaries() {
-        let slot = PlayerSlot::from_index(7).unwrap();
+        let slot = PlayerSlot::new(7).unwrap();
         let first = EVENTS
             .with(|events| events.borrow_mut().join(slot))
             .unwrap();

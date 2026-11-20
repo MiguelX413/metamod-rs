@@ -59,13 +59,13 @@ and add `&mut self` and `&mut Context<'_>` to its callbacks. Existing
 | `player_disconnect` | When the SDK observes a disconnect and invalidates the session, normally before the game DLL callback. |
 | `shutdown` | If Metamod forwards `GameShutdown`, once before the SDK drops the plugin instance. Engine access is unavailable. |
 
-`PlayerSlot` is a reusable one-based engine index. `PlayerId` identifies an
-observed session in that slot for the current map. Keep the full ID as the
-key for per-player state. `player.slot().get()` and the older `player.get()`
-return the slot number for display. Use `ctx.is_player_current(id)` to validate
-a saved ID and `ctx.player_at(slot)` to look up the session currently tracked
-in a slot. Use `PlayerSlot::new(index)` to validate a numeric index from
-configuration or user input before lookup. A disconnect, slot replacement,
+`PlayerSlot` is a reusable one-based GoldSrc index. `PlayerSlot::new(index)`
+takes an `i32` and rejects zero and negative values. Both `PlayerSlot::get()`
+and `PlayerId::get()` return the same one-based `i32` index.
+`PlayerId` identifies an observed session in that slot for the current map.
+Keep the full ID as the key for per-player state. Use
+`ctx.is_player_current(id)` to validate a saved ID and `ctx.player_at(slot)`
+to look up the session currently tracked in a slot. A disconnect, slot replacement,
 or map boundary invalidates old IDs immediately. Tracking depends on the
 host delivering its normal join, disconnect, and map callbacks on the
 server thread. It covers players whose joins the plugin observed.

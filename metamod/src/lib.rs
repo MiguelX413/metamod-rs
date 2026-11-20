@@ -6,7 +6,7 @@ use std::ffi::CStr;
 pub mod __ffi;
 mod runtime;
 
-pub use runtime::{Context, PlayerId, PlayerSlot, Server};
+pub use runtime::{Context, InvalidPlayerSlot, PlayerId, PlayerSlot, Server};
 
 #[cfg(feature = "macros")]
 pub use metamod_macros::metamod_plugin;

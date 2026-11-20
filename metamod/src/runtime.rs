@@ -1,27 +1,54 @@
 use metamod_sys::{Log, PluginInfo, raw::MetamodServerPrint};
 use std::{
     ffi::{CStr, CString},
+    fmt,
     marker::PhantomData,
-    num::{NonZeroU32, NonZeroU64},
+    num::{NonZeroI32, NonZeroU64},
 };
 
 /// A one-based engine slot. GoldSrc can reuse it for a different player.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct PlayerSlot(NonZeroU32);
+pub struct PlayerSlot(NonZeroI32);
 
 impl PlayerSlot {
-    /// Construct a slot from a positive GoldSrc index. This validates the
-    /// numeric range only. Use `Context::player_at` to check occupancy.
-    pub fn new(index: u32) -> Option<Self> {
-        Self::from_index(i32::try_from(index).ok()?)
+    /// Construct a slot from GoldSrc's signed, one-based index. Zero and
+    /// negative indices return `None`. Use `Context::player_at` to check occupancy.
+    pub fn new(index: i32) -> Option<Self> {
+        if index <= 0 {
+            return None;
+        }
+        NonZeroI32::new(index).map(Self)
     }
 
-    pub(crate) fn from_index(index: i32) -> Option<Self> {
-        Some(Self(NonZeroU32::new(u32::try_from(index).ok()?)?))
-    }
-
-    pub fn get(self) -> u32 {
+    /// Return the positive, one-based GoldSrc slot index.
+    pub fn get(self) -> i32 {
         self.0.get()
+    }
+}
+
+/// The supplied index was zero or negative.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidPlayerSlot(i32);
+
+impl fmt::Display for InvalidPlayerSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "player slot index must be positive, got {}", self.0)
+    }
+}
+
+impl std::error::Error for InvalidPlayerSlot {}
+
+impl TryFrom<i32> for PlayerSlot {
+    type Error = InvalidPlayerSlot;
+
+    fn try_from(index: i32) -> Result<Self, Self::Error> {
+        Self::new(index).ok_or(InvalidPlayerSlot(index))
+    }
+}
+
+impl From<PlayerSlot> for i32 {
+    fn from(slot: PlayerSlot) -> Self {
+        slot.get()
     }
 }
 
@@ -41,8 +68,8 @@ impl PlayerId {
         self.slot
     }
 
-    /// The slot number for display. Use the full ID for identity comparisons.
-    pub fn get(self) -> u32 {
+    /// The one-based GoldSrc slot index. Use the full ID for identity comparisons.
+    pub fn get(self) -> i32 {
         self.slot.get()
     }
 }
