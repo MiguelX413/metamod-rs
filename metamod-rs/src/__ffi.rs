@@ -784,9 +784,9 @@ mod tests {
         impl Plugin for TestPlugin {
             const METADATA: Metadata = METADATA;
             fn start_frame(&mut self, context: &mut Context<'_>) {
-                for name in ["test_rejected", "TEST_REJECTED", "test_rejected"] {
+                for name in [c"test_rejected", c"TEST_REJECTED", c"test_rejected"] {
                     assert_eq!(
-                        context.server().register_cvar(name, "value"),
+                        context.server().register_cvar(name, c"value"),
                         Err(crate::EngineError::RegistrationRejected)
                     );
                 }

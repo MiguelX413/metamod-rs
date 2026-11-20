@@ -149,24 +149,27 @@ impl<'callback> Context<'callback> {
 }
 
 impl Server<'_, '_> {
-    /// Print a line to the server console. Embedded NULs become replacement
-    /// characters. Falls back to Metamod's console utility if needed.
-    pub fn print(&self, message: &str) {
+    /// Print a line to the server console, adding a newline if needed.
+    /// The message is passed as native bytes.
+    pub fn print(&self, message: &CStr) {
         if !crate::__ffi::engine_available() {
             return;
         }
-        let mut bytes = message.replace('\0', "�").into_bytes();
         if let Some(print) = self.context.print {
-            if !bytes.ends_with(b"\n") {
+            let line;
+            let message = if message.to_bytes().ends_with(b"\n") {
+                message
+            } else {
+                let mut bytes = message.to_bytes().to_vec();
                 bytes.push(b'\n');
-            }
-            if let Ok(line) = CString::new(bytes) {
-                // SAFETY: The engine callback is valid on the server thread,
-                // and the C string lives through the synchronous call.
-                unsafe { print(line.as_ptr()) };
-            }
-        } else if let Ok(line) = CString::new(bytes) {
-            self.context.print_console(&line);
+                line = CString::new(bytes).expect("CStr payload contains no NUL");
+                &line
+            };
+            // SAFETY: The engine callback is valid on the server thread,
+            // and the C string lives through the synchronous call.
+            unsafe { print(message.as_ptr()) };
+        } else {
+            self.context.print_console(message);
         }
     }
 }

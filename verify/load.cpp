@@ -154,9 +154,9 @@ static void server_print(const char *message) {
         "Rust Engine Demo loaded\n",
         "Rust Engine Demo first frame\n",
         "Hello, player in slot 7 (user ID 42)!\n",
-        "Deferred command argument\n",
+        "Deferred command argument\377\n",
         "Hello, player in slot 7 (user ID 42)!\n",
-        "Deferred command argument\n",
+        "Deferred command argument\377\n",
         "New value\n",
         "Visible entities: 2\n",
         "Entity 0 World class=worldspawn targetname=<unset> origin: [0.0, 0.0, 0.0]\n",
@@ -181,7 +181,7 @@ static void server_print(const char *message) {
             assert(!command && !registered_cvar);
             return;
         }
-        char transient[] = "Deferred command argument";
+        char transient[] = "Deferred command argument\377";
         args[1] = transient;
         assert(command);
         command();

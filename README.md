@@ -27,7 +27,7 @@ impl Plugin for MyPlugin {
     fn start_frame(&mut self, ctx: &mut Context<'_>) {
         if !self.greeted {
             self.greeted = true;
-            ctx.server().print("Hello from Rust!");
+            ctx.server().print(c"Hello from Rust!");
         }
     }
 }
@@ -78,7 +78,9 @@ host delivering its normal join, disconnect, and map callbacks on the
 server thread. It covers players whose joins the plugin observed.
 
 Use the lifecycle hooks to clear map-specific state and
-`ctx.server().print(&str)` for console messages within a callback.
+`ctx.server().print(&CStr)` for console messages within a callback. Use a
+`c"..."` literal or construct a `CString` for dynamic text. The SDK sends
+the original bytes and adds a newline if needed.
 
 ## Engine services
 
@@ -88,7 +90,9 @@ explicitly in the attribute. At the server console with that demo installed,
 `rust_hello` prints the current `rust_hello_message` value and
 `rust_hello "New message"` updates it. `Server::cvar` returns an owned
 `CString`, with `Ok(None)` for an absent variable. Values supplied by Rust
-must fit in 1,023 bytes and may not contain NULs.
+must fit in 1,023 bytes. Command and CVar names and CVar values accept
+`&CStr`. The SDK still validates name syntax and length and the value's byte
+limit. Values and console output can contain non-UTF-8 bytes.
 
 Register names from an attached callback such as `start_frame` or
 `server_activate`. Use a plugin-specific prefix and register each name once

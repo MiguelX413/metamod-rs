@@ -115,7 +115,7 @@ impl fmt::Display for EngineError {
             Self::InvalidName => {
                 "expected a name of 1–63 ASCII letters, digits, underscores or hyphens"
             }
-            Self::InvalidValue => "expected a CVar value of at most 1023 bytes with no NUL",
+            Self::InvalidValue => "expected a CVar value of at most 1023 bytes",
             Self::AlreadyRegistered => "the console name is already registered",
             Self::UnknownCvar => "unknown CVar",
             Self::RegistrationRejected => "the engine did not register the CVar",
@@ -126,11 +126,13 @@ impl fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
-fn name(value: &str) -> Result<CString, EngineError> {
+fn name(value: &CStr) -> Result<CString, EngineError> {
+    let value = value.to_bytes();
     if value.is_empty()
         || value.len() > 63
         || !value
-            .bytes()
+            .iter()
+            .copied()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
     {
         return Err(EngineError::InvalidName);
@@ -138,11 +140,11 @@ fn name(value: &str) -> Result<CString, EngineError> {
     CString::new(value.to_ascii_lowercase()).map_err(|_| EngineError::InvalidName)
 }
 
-fn value(value: &str) -> Result<CString, EngineError> {
-    if value.len() > 1023 {
+fn validate_value(value: &CStr) -> Result<(), EngineError> {
+    if value.to_bytes().len() > 1023 {
         return Err(EngineError::InvalidValue);
     }
-    CString::new(value).map_err(|_| EngineError::InvalidValue)
+    Ok(())
 }
 
 fn engine() -> Result<Engine, EngineError> {
@@ -203,10 +205,10 @@ fn reserve_name(name: CString, cvar: bool) -> Result<&'static CStr, EngineError>
 
 impl Server<'_, '_> {
     /// Register a server CVar from an attached callback. Use a plugin-specific name.
-    pub fn register_cvar(&self, input: &str, default: &str) -> Result<(), EngineError> {
+    pub fn register_cvar(&self, input: &CStr, default: &CStr) -> Result<(), EngineError> {
         registration_available()?;
         let name = name(input)?;
-        let default = value(default)?;
+        validate_value(default)?;
         let engine = engine()?;
         let register = engine.register_cvar.ok_or(EngineError::Unavailable)?;
         if COMMANDS.with(|commands| commands.borrow().contains(name.as_c_str()))
@@ -221,7 +223,7 @@ impl Server<'_, '_> {
         // Reserve before crossing FFI. Even a failed or interrupted
         // attempt may have handed the name and CVar storage to the host.
         let name = reserve_name(name, true)?;
-        let initial = Box::leak(default.into_boxed_c_str());
+        let initial = Box::leak(default.to_owned().into_boxed_c_str());
         let cvar = Box::into_raw(Box::new(cvar_t {
             name: name.as_ptr(),
             string: initial.as_ptr(),
@@ -237,7 +239,7 @@ impl Server<'_, '_> {
     }
 
     /// Copy the current value. An empty value differs from an unregistered CVar.
-    pub fn cvar(&self, input: &str) -> Result<Option<CString>, EngineError> {
+    pub fn cvar(&self, input: &CStr) -> Result<Option<CString>, EngineError> {
         let name = name(input)?;
         let engine = engine()?;
         let get = engine.get_cvar.ok_or(EngineError::Unavailable)?;
@@ -252,9 +254,9 @@ impl Server<'_, '_> {
     }
 
     /// Set an existing CVar through the engine, which copies the supplied value.
-    pub fn set_cvar(&self, input: &str, new_value: &str) -> Result<(), EngineError> {
+    pub fn set_cvar(&self, input: &CStr, new_value: &CStr) -> Result<(), EngineError> {
         let name = name(input)?;
-        let value = value(new_value)?;
+        validate_value(new_value)?;
         let engine = engine()?;
         let set = engine.set_cvar.ok_or(EngineError::Unavailable)?;
         if !exists(engine, &name)? {
@@ -262,13 +264,13 @@ impl Server<'_, '_> {
         }
         available()?;
         // SAFETY: Both input strings stay live through the synchronous copy.
-        unsafe { set(name.as_ptr(), value.as_ptr()) };
+        unsafe { set(name.as_ptr(), new_value.as_ptr()) };
         Ok(())
     }
 
     /// Register a command for `Plugin::server_command` from an attached callback.
     /// GoldSrc cannot report native command-name collisions through this API.
-    pub fn register_command(&self, input: &str) -> Result<(), EngineError> {
+    pub fn register_command(&self, input: &CStr) -> Result<(), EngineError> {
         registration_available()?;
         let callback = self.context.command;
         let name = name(input)?;
@@ -429,21 +431,37 @@ mod tests {
     }
 
     #[test]
+    fn native_inputs_still_enforce_console_rules() {
+        assert_eq!(name(c"Mixed_Name-7").as_deref(), Ok(c"mixed_name-7"));
+        assert_eq!(name(c"bad name"), Err(EngineError::InvalidName));
+        assert_eq!(name(c"bad\xff"), Err(EngineError::InvalidName));
+        assert_eq!(validate_value(c"\xff"), Ok(()));
+        let oversized = CString::new(vec![b'x'; 1024]).unwrap();
+        assert_eq!(validate_value(&oversized), Err(EngineError::InvalidValue));
+    }
+
+    #[test]
     fn irreversible_registrations_share_a_bounded_name_budget() {
-        assert!(reserve_name(name("Test").unwrap(), true).is_ok());
+        assert!(reserve_name(name(c"Test").unwrap(), true).is_ok());
         assert_eq!(
-            reserve_name(name("test").unwrap(), true),
+            reserve_name(name(c"test").unwrap(), true),
             Err(EngineError::RegistrationRejected)
         );
         assert_eq!(
-            reserve_name(name("TEST").unwrap(), false),
+            reserve_name(name(c"TEST").unwrap(), false),
             Err(EngineError::AlreadyRegistered)
         );
         for index in 1..MAX_CONSOLE_REGISTRATIONS {
-            assert!(reserve_name(name(&format!("test{index}")).unwrap(), false).is_ok());
+            assert!(
+                reserve_name(
+                    name(&CString::new(format!("test{index}")).unwrap()).unwrap(),
+                    false
+                )
+                .is_ok()
+            );
         }
         assert_eq!(
-            reserve_name(name("one_more").unwrap(), true),
+            reserve_name(name(c"one_more").unwrap(), true),
             Err(EngineError::RegistrationLimit)
         );
     }
