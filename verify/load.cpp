@@ -206,7 +206,20 @@ int main(int argc, char **argv) {
     globals.mres = MRES_UNSET;
     post_hooks.pfnServerActivate(nullptr, 0, 0);
     assert(globals.mres == MRES_IGNORED);
-    assert(hooks.pfnStartFrame && !hooks.pfnThink && !hooks.pfnAllowLagCompensation);
+    assert(hooks.pfnStartFrame && !hooks.pfnThink);
+    assert((hooks.pfnAllowLagCompensation != nullptr) == engine_demo);
+    assert((post_hooks.pfnAllowLagCompensation != nullptr) == engine_demo);
+    if (engine_demo) {
+        assert(hooks.pfnAllowLagCompensation() == 0 && globals.mres == MRES_HANDLED);
+        int original = 1;
+        globals.orig_ret = &original;
+        globals.status = MRES_HANDLED;
+        assert(post_hooks.pfnAllowLagCompensation() == 0 && globals.mres == MRES_HANDLED);
+        globals.status = MRES_SUPERCEDE;
+        assert(post_hooks.pfnAllowLagCompensation() == 0 && globals.mres == MRES_IGNORED);
+        globals.orig_ret = nullptr;
+        globals.status = MRES_UNSET;
+    }
     for (int frame = 0; frame < 2; ++frame) {
         globals.mres = MRES_UNSET;
         hooks.pfnStartFrame();

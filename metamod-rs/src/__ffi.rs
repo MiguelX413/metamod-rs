@@ -4,7 +4,7 @@
 pub use metamod_sys::*;
 
 use crate::{
-    Command, Context, PlayerId, PlayerSlot, Plugin,
+    Command, Context, HookResult, PlayerId, PlayerSlot, Plugin, PostHookResult,
     engine::{self, Engine},
 };
 use raw::{NEW_DLL_FUNCTIONS, edict_t};
@@ -313,6 +313,7 @@ unsafe extern "C" fn entity_api<P: Plugin>(table: *mut DllFunctions, version: *m
             ENTITY_INTERFACE,
             DllFunctions {
                 pfnStartFrame: Some(start_frame::<P>),
+                pfnAllowLagCompensation: P::LAG_COMPENSATION_PRE.then_some(lag_pre::<P>),
                 pfnServerActivate: Some(begin_map),
                 pfnServerDeactivate: Some(server_deactivate::<P>),
                 pfnClientDisconnect: Some(player_disconnect::<P>),
@@ -334,6 +335,7 @@ unsafe extern "C" fn entity_api_post<P: Plugin>(
             ENTITY_INTERFACE,
             DllFunctions {
                 pfnServerActivate: Some(server_activate::<P>),
+                pfnAllowLagCompensation: P::LAG_COMPENSATION_POST.then_some(lag_post::<P>),
                 pfnClientPutInServer: Some(player_join::<P>),
                 ..Default::default()
             },
@@ -359,13 +361,13 @@ unsafe extern "C" fn new_api<P: Plugin>(
     }
 }
 
-struct Ignored(*mut MetaGlobals);
+struct ResultWriter(*mut MetaGlobals, MetaResult);
 
-impl Drop for Ignored {
+impl Drop for ResultWriter {
     fn drop(&mut self) {
         // SAFETY: The attached server thread owns the hook result, and
         // Metamod keeps the globals live for this entire invocation.
-        unsafe { ptr::addr_of_mut!((*self.0).mres).write(MRES_IGNORED) };
+        unsafe { ptr::addr_of_mut!((*self.0).mres).write(self.1) };
     }
 }
 
@@ -375,7 +377,7 @@ fn hook(callback: impl FnOnce()) {
             return;
         }
         if let State::Attached { globals, .. } = STATE.get() {
-            let _result = Ignored(globals);
+            let _result = ResultWriter(globals, MRES_IGNORED);
             callback();
         }
     });
@@ -440,6 +442,89 @@ impl Drop for Running {
     }
 }
 
+fn invoke<P: Plugin, T>(
+    services: Services,
+    callback: impl FnOnce(&mut P, &mut Context<'_>) -> T,
+) -> Option<T> {
+    contained(|| {
+        INSTANCE.with(|instance| {
+            let mut slot = instance.borrow_mut();
+            let plugin = slot.as_mut()?.downcast_mut::<P>()?;
+            let scope = ();
+            let mut context = make_context::<P>(&scope, services);
+            Some(callback(plugin, &mut context))
+        })
+    })
+    .flatten()
+}
+
+fn synchronous<P: Plugin, T: Default>(
+    callback: impl FnOnce(&mut P, &mut Context<'_>, *mut MetaGlobals) -> HookResult<T>,
+) -> T {
+    contained(|| {
+        if wrong_thread() {
+            return T::default();
+        }
+        let State::Attached {
+            globals,
+            services,
+            disabled,
+        } = STATE.get()
+        else {
+            return T::default();
+        };
+        let mut result = ResultWriter(globals, MRES_IGNORED);
+        if disabled || SHUTDOWN.get() || RUNNING.replace(true) {
+            return T::default();
+        }
+        let running = Running;
+        EVENTS.with(|events| events.borrow_mut().submitted = 1);
+        let decision = invoke::<P, _>(services, |plugin, context| {
+            callback(plugin, context, globals)
+        });
+        if decision.is_none() {
+            disable_callbacks();
+        }
+        drop(running);
+        drain::<P>();
+        if SHUTDOWN.get() || matches!(STATE.get(), State::Attached { disabled: true, .. }) {
+            return T::default();
+        }
+        let (status, value) = match decision.unwrap_or_default() {
+            HookResult::Ignored => (MRES_IGNORED, T::default()),
+            HookResult::Handled => (MRES_HANDLED, T::default()),
+            HookResult::Override(value) => (MRES_OVERRIDE, value),
+            HookResult::Supercede(value) => (MRES_SUPERCEDE, value),
+        };
+        result.1 = status;
+        value
+    })
+    .unwrap_or_default()
+}
+
+unsafe extern "C" fn lag_pre<P: Plugin>() -> c_int {
+    c_int::from(synchronous::<P, _>(|plugin, context, _| {
+        plugin.allow_lag_compensation(context)
+    }))
+}
+
+unsafe extern "C" fn lag_post<P: Plugin>() -> c_int {
+    c_int::from(synchronous::<P, _>(|plugin, context, globals| {
+        // SAFETY: Metamod supplies an int return slot for this specific post hook.
+        // Copy before user code can reenter Metamod. A superceded call has no
+        // original GameDLL result even if Metamod supplies a fallback slot.
+        let original = unsafe {
+            let slot = (*globals).orig_ret.cast::<c_int>();
+            ((*globals).status != MRES_SUPERCEDE && !slot.is_null()).then(|| slot.read() != 0)
+        };
+        match plugin.allow_lag_compensation_post(context, original) {
+            PostHookResult::Ignored => HookResult::Ignored,
+            PostHookResult::Handled => HookResult::Handled,
+            PostHookResult::Override(value) => HookResult::Override(value),
+        }
+    }))
+}
+
 fn drain<P: Plugin>() {
     if RUNNING.replace(true) {
         return;
@@ -453,23 +538,13 @@ fn drain<P: Plugin>() {
         let Some(event) = EVENTS.with(|events| events.borrow_mut().pending.pop_front()) else {
             break;
         };
-        let result = contained(|| {
-            INSTANCE.with(|instance| {
-                let mut slot = instance.borrow_mut();
-                let plugin = slot.as_mut().and_then(|plugin| plugin.downcast_mut::<P>());
-                if let Some(plugin) = plugin {
-                    let scope = ();
-                    let mut context = make_context::<P>(&scope, services);
-                    match event {
-                        Event::Frame => plugin.start_frame(&mut context),
-                        Event::Activate => plugin.server_activate(&mut context),
-                        Event::Deactivate => plugin.server_deactivate(&mut context),
-                        Event::Join(player) => plugin.player_join(&mut context, player),
-                        Event::Disconnect(player) => plugin.player_disconnect(&mut context, player),
-                        Event::Command(command) => plugin.server_command(&mut context, &command),
-                    }
-                }
-            });
+        let result = invoke::<P, _>(services, |plugin, context| match event {
+            Event::Frame => plugin.start_frame(context),
+            Event::Activate => plugin.server_activate(context),
+            Event::Deactivate => plugin.server_deactivate(context),
+            Event::Join(player) => plugin.player_join(context, player),
+            Event::Disconnect(player) => plugin.player_disconnect(context, player),
+            Event::Command(command) => plugin.server_command(context, &command),
         });
         if result.is_none() {
             disable_callbacks();
@@ -605,6 +680,45 @@ mod tests {
             log: None,
             console: None,
         }));
+    }
+
+    #[test]
+    fn synchronous_results_survive_reentry_and_panics_fall_back() {
+        #[derive(Default)]
+        struct TestPlugin;
+        impl Plugin for TestPlugin {
+            const METADATA: Metadata = METADATA;
+        }
+
+        queried();
+        let mut globals = MetaGlobals::default();
+        let mut functions = MetaFunctions::default();
+        // SAFETY: The hook globals remain live throughout this test.
+        assert_eq!(
+            unsafe { attach::<TestPlugin>(PT_STARTUP, &mut functions, &mut globals) },
+            1
+        );
+        for (decision, expected, value) in [
+            (HookResult::Ignored, MRES_IGNORED, false),
+            (HookResult::Handled, MRES_HANDLED, false),
+            (HookResult::Override(true), MRES_OVERRIDE, true),
+            (HookResult::Supercede(true), MRES_SUPERCEDE, true),
+        ] {
+            let returned = synchronous::<TestPlugin, _>(|_, _, _| {
+                let skipped = synchronous::<TestPlugin, bool>(|_, _, _| panic!("nested hook ran"));
+                assert!(!skipped);
+                submit::<TestPlugin>(Event::Deactivate);
+                decision
+            });
+            assert_eq!(globals.mres, expected);
+            assert_eq!(returned, value);
+        }
+        assert!(!synchronous::<TestPlugin, bool>(|_, _, _| panic!(
+            "hook panic"
+        )));
+        assert_eq!(globals.mres, MRES_IGNORED);
+        // SAFETY: Shutdown uses the live hook globals on the attached thread.
+        unsafe { game_shutdown::<TestPlugin>() };
     }
 
     #[derive(Default)]

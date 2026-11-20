@@ -196,9 +196,9 @@ engine-demo shows explicit attribute arguments.
   server-thread globals alone.
 - Query accepts interface major 5 with minor 13 or newer. Both pre- and
   post-`GetEntityAPI2` factories negotiate game-DLL interface 140. The optional
-  new-DLL table negotiates its own version and observes `GameShutdown`. All
-  attached server-thread hooks set `MRES_IGNORED`, including skipped,
-  deferred, disabled, and panicking invocations.
+  new-DLL table negotiates its own version and observes `GameShutdown`.
+  Observational hooks and skipped, disabled, or panicking synchronous hooks
+  set `MRES_IGNORED`. Successful synchronous hooks publish their typed result.
 - Nested frame callbacks are skipped. Nested map, player, and command
   notifications are queued in arrival order and delivered after the active Rust callback
   releases its mutable state borrow. Only owned event data enters the queue.
@@ -233,6 +233,16 @@ engine-demo shows explicit attribute arguments.
 On Win32 the export macro uses stdcall for `GiveFnptrsToDll` and cdecl
 for the Metamod entry points. Metamod resolves these exports by name.
 The SDK leaves PE ordinals to the linker.
+
+## Typed hooks and coverage
+
+The [API coverage matrix](docs/api-coverage.md) tracks generated ABI tables,
+safe wrappers, and verification. The engine demo opts into both
+`AllowLagCompensation` phases through `Plugin::LAG_COMPENSATION_PRE` and
+`LAG_COMPENSATION_POST`. It observes the result without changing gameplay.
+Pre hooks can ignore, handle, override, or supercede. Post hooks can ignore,
+handle, or override. A nested synchronous decision is ignored, while owned
+notifications raised during the callback still use the deferred queue.
 
 ## Verify
 

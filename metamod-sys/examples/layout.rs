@@ -159,6 +159,10 @@ fn main() {
     println!("cvar_value {}", offset_of!(raw::cvar_t, value));
     println!("cvar_next {}", offset_of!(raw::cvar_t, next));
     println!(
+        "pfnAllowLagCompensation {}",
+        offset_of!(DllFunctions, pfnAllowLagCompensation)
+    );
+    println!(
         "NewDllFunctions {} {}",
         size_of::<raw::NEW_DLL_FUNCTIONS>(),
         align_of::<raw::NEW_DLL_FUNCTIONS>()

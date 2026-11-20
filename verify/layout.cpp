@@ -62,6 +62,7 @@ int main() {
     std::printf("cvar_flags %zu\n", offsetof(cvar_t, flags));
     std::printf("cvar_value %zu\n", offsetof(cvar_t, value));
     std::printf("cvar_next %zu\n", offsetof(cvar_t, next));
+    std::printf("pfnAllowLagCompensation %zu\n", offsetof(DLL_FUNCTIONS, pfnAllowLagCompensation));
     std::printf("NewDllFunctions %zu %zu\n", sizeof(NEW_DLL_FUNCTIONS), alignof(NEW_DLL_FUNCTIONS));
     std::printf("pfnGameShutdown %zu\n", offsetof(NEW_DLL_FUNCTIONS, pfnGameShutdown));
     std::printf("new_dll_version %d\n", NEW_DLL_FUNCTIONS_VERSION);

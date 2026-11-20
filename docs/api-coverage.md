@@ -1,0 +1,48 @@
+# API coverage
+
+The pinned headers in `upstream/` are the slot-by-slot inventory. This matrix
+tracks SDK support by interface and safety contract. Update the relevant row
+and verification when a wrapper is added. A generated table exposes its
+function pointers through `metamod_sys::raw`; it does not imply that its
+pointees have exposed fields or that the functions are safe to call.
+
+| Interface and upstream inventory | Raw FFI | Safe SDK | Safety requirements and verification |
+| --- | --- | --- | --- |
+| Metamod loader and results, `metamod/meta_api.h`, `plinfo.h`, `h_export.h` | Entry point typedefs, metadata, result globals, and all eight table factory slots | Export macros, startup attachment, resident plugin policy, typed outcomes for synchronous hooks | x86 loader and layout probes. Mutable result slots belong to the current native invocation. |
+| Metamod utilities, `metamod/mutil.h` | Utility table generated | Console and log output | Fixed formats for varargs. Game info, user-message lookup, entity dispatch, and plugin control still need individual ownership and reentrancy contracts. |
+| GameDLL lifecycle and player callbacks, `engine/eiface.h` `DLL_FUNCTIONS`, `metamod/dllapi.h` | Complete callback table | Frame, map activate/deactivate, player put-in-server/disconnect, and lag-compensation pre/post | Loader probes cover current registrations and original lag-compensation return. Client admission, user-info editing, save/restore, movement, entity dispatch, and networking hooks remain raw; pointer/out-buffer validity and synchronous results need individual treatment. |
+| NewDLL, `engine/eiface.h` `NEW_DLL_FUNCTIONS` | Complete callback table | Optional game shutdown | Layout and loader probes. Entity-private-data release, collision filtering, and CVar replies remain raw. Their lifetimes and query correlation need separate contracts. |
+| Engine console, commands and CVars, `engine/eiface.h` `enginefuncs_t`, `common/cvardef.h` | Engine slots and CVar layout generated | Printing, registration, owned command tokens, CVar reads/writes | Native harness exercises reentrant commands and CVar storage. Server command execution and arbitrary engine callback hooks remain raw. |
+| Engine players and entities, `engine/eiface.h`, `engine/edict.h`, `engine/progdefs.h` | Callback slots; edicts and entvars deliberately opaque | Session-aware player lookup and owned user/auth IDs | Native harness exercises session revalidation. Generic entities, creation/removal, keyvalues, and spatial access need generation-checked handles with map invalidation. |
+| Engine tracing, physics and movement, `engine/eiface.h`, `pm_shared/pm_defs.h` | Engine slots; selected payloads opaque | Pending | Start with owned trace inputs/results. Treat hit pointers as transient and revalidate before resolving handles. Movement and physics state require callback-scoped mutation, reentry analysis, and layout probes. |
+| Engine fake clients, messages, events, sound and resources, `engine/eiface.h` | Engine slots | Pending | Fake client creation needs a partial-failure and disconnect policy. Message construction needs a complete, validated send operation around the native begin/write/end sequence. Resource registration is phase-dependent. |
+| Other SDK data and auxiliary interfaces, `common/`, `engine/`, `pm_shared/`, `dlls/` | Selected transitively referenced types; no blanket header coverage | Pending | Add audited public ABI types by header family. Keep game implementation types and templates outside the ABI surface. |
+
+The layout probes and native loader scripts run on Linux i686 and are configured
+for Win32 CI. They model the host contract. Live engine tests and cross-fork
+behavior require separate verification.
+
+## Extension rules
+
+- Use the bindgen callback table as the signature source. Keep native pointer
+  reads and writes in the FFI boundary and add layout or loader checks for
+  each new call shape.
+- Keep observations deferable only when their payload is owned. A synchronous
+  decision, writable buffer, or borrowed native handle needs a same-call
+  policy. Returning hooks skipped under reentry leave `MRES_IGNORED` and
+  return a placeholder the host ignores.
+- Use `HookResult<T>` for pre decisions and `PostHookResult<T>` for post
+  decisions. Superceding skips the GameDLL call and is a pre-only operation.
+  Copy original returns before calling plugin code and read only storage the
+  specific ABI callback supplies. Metamod owns result arbitration.
+- Prefer snapshots and validated handles to references into the engine. Take
+  copies before another native call and revalidate identities after calls
+  that can reenter. Keep map, callback, and engine lifetimes distinct.
+
+## Next milestones
+
+1. Add owned line/hull trace results and generation-checked entity handles.
+2. Add a synchronous client admission hook with bounded rejection output and
+   expand result verification against a real Metamod host on both x86 targets.
+3. Add validated message construction and fake-client lifecycle management,
+   then audit movement/physics and expand raw payload coverage family by family.

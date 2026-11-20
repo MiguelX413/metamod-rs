@@ -5,9 +5,11 @@ use std::ffi::CStr;
 #[doc(hidden)]
 pub mod __ffi;
 mod engine;
+mod hooks;
 mod runtime;
 
 pub use engine::{Command, EngineError, PlayerInfo};
+pub use hooks::{HookResult, PostHookResult};
 
 pub use runtime::{Context, InvalidPlayerSlot, PlayerId, PlayerSlot, Server};
 
@@ -18,8 +20,8 @@ pub mod prelude {
     #[cfg(feature = "macros")]
     pub use crate::metamod_plugin;
     pub use crate::{
-        Command, Context, EngineError, Metadata, PlayerId, PlayerInfo, PlayerSlot, Plugin, Server,
-        export_plugin,
+        Command, Context, EngineError, HookResult, Metadata, PlayerId, PlayerInfo, PlayerSlot,
+        Plugin, PostHookResult, Server, export_plugin,
     };
 }
 
@@ -48,6 +50,23 @@ pub trait Plugin: Default + 'static {
 
     /// Handle a command registered through `Server::register_command`.
     fn server_command(&mut self, _context: &mut Context<'_>, _command: &Command) {}
+
+    /// Register the pre and post lag compensation hooks independently.
+    const LAG_COMPENSATION_PRE: bool = false;
+    const LAG_COMPENSATION_POST: bool = false;
+
+    fn allow_lag_compensation(&mut self, _context: &mut Context<'_>) -> HookResult<bool> {
+        HookResult::Ignored
+    }
+
+    /// Metamod's reported original result. A superceded call has no original.
+    fn allow_lag_compensation_post(
+        &mut self,
+        _context: &mut Context<'_>,
+        _original: Option<bool>,
+    ) -> PostHookResult<bool> {
+        PostHookResult::Ignored
+    }
 
     fn start_frame(&mut self, _context: &mut Context<'_>) {}
 

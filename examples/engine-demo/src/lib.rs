@@ -14,6 +14,24 @@ struct EngineDemo {
     log_tag = "RUSTENGINE"
 )]
 impl Plugin for EngineDemo {
+    const LAG_COMPENSATION_PRE: bool = true;
+    const LAG_COMPENSATION_POST: bool = true;
+
+    fn allow_lag_compensation(&mut self, _: &mut Context<'_>) -> HookResult<bool> {
+        HookResult::Handled
+    }
+
+    fn allow_lag_compensation_post(
+        &mut self,
+        _: &mut Context<'_>,
+        original: Option<bool>,
+    ) -> PostHookResult<bool> {
+        match original {
+            Some(_) => PostHookResult::Handled,
+            None => PostHookResult::Ignored,
+        }
+    }
+
     fn initialize(&mut self, ctx: &mut Context<'_>) -> bool {
         ctx.server().print("Rust Engine Demo loaded");
         true
