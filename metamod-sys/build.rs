@@ -24,7 +24,7 @@ fn main() {
         .allowlist_type("META_(FUNCTIONS|RES|QUERY_FN|ATTACH_FN|DETACH_FN)")
         .allowlist_type("plugin_info_t|meta_globals_t|gamedll_funcs_t|mutil_funcs_t")
         .allowlist_type("GIVE_ENGINE_FUNCTIONS_FN|Metamod.*|HULL_TYPE|IGNORE_MONSTERS")
-        .allowlist_var("META_INTERFACE_VERSION|INTERFACE_VERSION|NEW_DLL_FUNCTIONS_VERSION")
+        .allowlist_var("META_INTERFACE_VERSION|INTERFACE_VERSION|NEW_DLL_FUNCTIONS_VERSION|FL_CLIENT|FL_MONSTER|FL_FAKECLIENT")
         .opaque_type("customization_s|playermove_s|entity_state_s")
         .opaque_type("saverestore_s|usercmd_s|clientdata_s|weapon_data_s|netadr_s")
         .prepend_enum_name(false)

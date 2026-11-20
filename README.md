@@ -140,8 +140,18 @@ before you use them.
 
 `ctx.entity_spatial(handle)` revalidates the generation and copies origin,
 angles, velocity, and absolute world-space bounds. The result owns its
-data. Use `rust_entities` or `rust_entities 7` in the engine demo to list
-origins or look up a single index.
+data. `ctx.entity_info(handle)` classifies the entity as world, client, fake
+client, monster, or other using the world index and GoldSrc flags. It copies
+the common retained string keyvalues `classname`, `globalname`, `target`,
+`targetname`, `model`, `netname`, and `message` into owned C strings. Zero
+indices and null strings are absent. GameDLL-private keys and map keys the
+GameDLL consumed during loading are outside this snapshot.
+
+Use `rust_entities` or `rust_entities 7` in the engine demo to show the
+classification, classname, targetname, and origin. The SDK copies strings
+before the next engine call and discards the snapshot if the map or entity
+generation changes during lookup. Owned snapshots remain readable after the
+handle expires.
 
 ## Build and install hello-world
 

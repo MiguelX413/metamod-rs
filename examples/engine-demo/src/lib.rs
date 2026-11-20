@@ -80,10 +80,25 @@ impl Plugin for EngineDemo {
                 Ok(entities) => {
                     server.print(&format!("Visible entities: {}", entities.len()));
                     for entity in entities {
-                        if let Some(spatial) = ctx.entity_spatial(entity) {
+                        if let (Some(info), Some(spatial)) =
+                            (ctx.entity_info(entity), ctx.entity_spatial(entity))
+                        {
+                            let classname = info
+                                .keyvalues
+                                .classname
+                                .as_deref()
+                                .map_or_else(|| "<unset>".into(), |name| name.to_string_lossy());
+                            let targetname = info
+                                .keyvalues
+                                .targetname
+                                .as_deref()
+                                .map_or_else(|| "<unset>".into(), |name| name.to_string_lossy());
                             server.print(&format!(
-                                "Entity {} origin: {:?}",
+                                "Entity {} {:?} class={} targetname={} origin: {:?}",
                                 entity.index(),
+                                info.kind,
+                                classname,
+                                targetname,
                                 spatial.origin
                             ));
                         }

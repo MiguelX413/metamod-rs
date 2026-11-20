@@ -85,6 +85,18 @@ static edict_t *entity_of_index(int index) {
     return index == 7 ? &player : nullptr;
 }
 
+static bool string_transition;
+
+static const char *string_from_index(int index) {
+    static char value[32];
+    assert(index == 1 || index == 2 || index == -3);
+    if (string_transition) {
+        hooks.pfnServerDeactivate();
+    }
+    std::strcpy(value, index == 1 ? "worldspawn" : index == 2 ? "player" : "demo_target");
+    return value;
+}
+
 static int player_userid(edict_t *edict) {
     assert(edict == &player);
     return 42;
@@ -136,15 +148,16 @@ static void server_print(const char *message) {
         "Deferred command argument\n",
         "New value\n",
         "Visible entities: 2\n",
-        "Entity 0 origin: [0.0, 0.0, 0.0]\n",
-        "Entity 7 origin: [1.0, 2.0, 3.0]\n",
+        "Entity 0 World class=worldspawn targetname=<unset> origin: [0.0, 0.0, 0.0]\n",
+        "Entity 7 FakeClient class=player targetname=demo_target origin: [1.0, 2.0, 3.0]\n",
         "Visible entities: 0\n",
         "Entity discovery failed: the map changed during entity discovery\n",
+        "Visible entities: 1\n",
         "Line fraction: 0.5, hit: Some(7)\n",
         "Hull fraction: 1\n",
         "Line trace failed: the map changed during the trace\n",
     };
-    assert(logged < (engine_demo ? 15 : 3));
+    assert(logged < (engine_demo ? 16 : 3));
     assert(std::strcmp(message, engine_demo ? engine_output[logged] : hello_output[logged]) == 0);
     std::fputs(message, stdout);
     if (++logged == 2) {
@@ -204,6 +217,7 @@ int main(int argc, char **argv) {
     engine.pfnCmd_Argc = command_argc;
     engine.pfnCmd_Argv = command_argv;
     engine.pfnPEntityOfEntIndex = entity_of_index;
+    engine.pfnSzFromIndex = string_from_index;
     engine.pfnGetPlayerUserId = player_userid;
     engine.pfnGetPlayerAuthId = player_authid;
     globalvars_t engine_globals{};
@@ -212,6 +226,10 @@ int main(int argc, char **argv) {
     player.v.origin.y = 2;
     player.v.origin.z = 3;
     vacant.free = 1;
+    world.v.classname = 1;
+    player.v.classname = 2;
+    player.v.targetname = static_cast<string_t>(-3);
+    player.v.flags = FL_CLIENT | FL_FAKECLIENT;
     give(&engine, &engine_globals);
 
     META_FUNCTIONS functions{};
@@ -308,17 +326,24 @@ int main(int argc, char **argv) {
         discovery_transition = false;
         post_hooks.pfnServerActivate(nullptr, 0, 0);
         assert(logged == 12);
+        args[1] = "7";
+        string_transition = true;
+        entities_command();
+        string_transition = false;
+        args[1] = nullptr;
+        assert(logged == 13);
+        post_hooks.pfnServerActivate(nullptr, 0, 0);
         assert(trace_command);
         args[0] = "rust_trace";
         trace_command();
-        assert(logged == 14);
+        assert(logged == 15);
         trace_transition = true;
         trace_command();
-        assert(logged == 15);
+        assert(logged == 16);
     } else {
         assert(logged == 3 && !command && !registered_cvar);
     }
-    const int expected_logs = engine_demo ? 15 : 3;
+    const int expected_logs = engine_demo ? 16 : 3;
     globals.mres = MRES_UNSET;
     hooks.pfnClientDisconnect(&player);
     assert(globals.mres == MRES_IGNORED);

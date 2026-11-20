@@ -5,7 +5,7 @@ use metamod_sys::{
         MetamodAddServerCommand, MetamodCVarGetPointer, MetamodCVarGetString, MetamodCVarRegister,
         MetamodCVarSetString, MetamodCmd_Argc, MetamodCmd_Argv, MetamodGetPlayerAuthId,
         MetamodGetPlayerUserId, MetamodIndexOfEdict, MetamodPEntityOfEntIndex, MetamodServerPrint,
-        MetamodTraceHull, MetamodTraceLine, cvar_t,
+        MetamodSzFromIndex, MetamodTraceHull, MetamodTraceLine, cvar_t,
     },
 };
 use std::{
@@ -47,6 +47,7 @@ engine_callbacks! {
     auth_id: MetamodGetPlayerAuthId = pfnGetPlayerAuthId,
     trace_line: MetamodTraceLine = pfnTraceLine,
     trace_hull: MetamodTraceHull = pfnTraceHull,
+    string_from_index: MetamodSzFromIndex = pfnSzFromIndex,
 }
 
 pub(crate) type CommandCallback = unsafe extern "C" fn();
@@ -260,7 +261,7 @@ impl Server<'_, '_> {
 }
 
 /// A non-null pointer must refer to a live NUL-terminated engine string.
-unsafe fn copy_string(value: *const c_char) -> Option<CString> {
+pub(crate) unsafe fn copy_string(value: *const c_char) -> Option<CString> {
     if value.is_null() {
         return None;
     }

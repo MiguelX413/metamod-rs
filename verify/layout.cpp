@@ -81,6 +81,15 @@ int main() {
     std::printf("spatial_velocity %zu\n", offsetof(entvars_t, velocity));
     std::printf("spatial_absmin %zu\n", offsetof(entvars_t, absmin));
     std::printf("spatial_absmax %zu\n", offsetof(entvars_t, absmax));
+    std::printf("key_flags %zu\n", offsetof(entvars_t, flags));
+    std::printf("key_classname %zu\n", offsetof(entvars_t, classname));
+    std::printf("key_globalname %zu\n", offsetof(entvars_t, globalname));
+    std::printf("key_target %zu\n", offsetof(entvars_t, target));
+    std::printf("key_targetname %zu\n", offsetof(entvars_t, targetname));
+    std::printf("key_model %zu\n", offsetof(entvars_t, model));
+    std::printf("key_netname %zu\n", offsetof(entvars_t, netname));
+    std::printf("key_message %zu\n", offsetof(entvars_t, message));
+    std::printf("pfnSzFromIndex %zu\n", offsetof(enginefuncs_t, pfnSzFromIndex));
     std::printf("NewDllFunctions %zu %zu\n", sizeof(NEW_DLL_FUNCTIONS), alignof(NEW_DLL_FUNCTIONS));
     std::printf("pfnGameShutdown %zu\n", offsetof(NEW_DLL_FUNCTIONS, pfnGameShutdown));
     std::printf("new_dll_version %d\n", NEW_DLL_FUNCTIONS_VERSION);

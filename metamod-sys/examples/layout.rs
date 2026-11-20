@@ -186,6 +186,18 @@ fn main() {
     println!("spatial_velocity {}", offset_of!(raw::entvars_t, velocity));
     println!("spatial_absmin {}", offset_of!(raw::entvars_t, absmin));
     println!("spatial_absmax {}", offset_of!(raw::entvars_t, absmax));
+    println!("key_flags {}", offset_of!(raw::entvars_t, flags));
+    println!("key_classname {}", offset_of!(raw::entvars_t, classname));
+    println!("key_globalname {}", offset_of!(raw::entvars_t, globalname));
+    println!("key_target {}", offset_of!(raw::entvars_t, target));
+    println!("key_targetname {}", offset_of!(raw::entvars_t, targetname));
+    println!("key_model {}", offset_of!(raw::entvars_t, model));
+    println!("key_netname {}", offset_of!(raw::entvars_t, netname));
+    println!("key_message {}", offset_of!(raw::entvars_t, message));
+    println!(
+        "pfnSzFromIndex {}",
+        offset_of!(EngineFunctions, pfnSzFromIndex)
+    );
     println!(
         "NewDllFunctions {} {}",
         size_of::<raw::NEW_DLL_FUNCTIONS>(),

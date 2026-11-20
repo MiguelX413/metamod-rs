@@ -1,9 +1,12 @@
-use crate::{__ffi, Context, Server, engine::Engine};
+use crate::{
+    __ffi, Context, Server,
+    engine::{Engine, copy_string},
+};
 use metamod_sys::{
     EngineGlobals,
     raw::{self, edict_t},
 };
-use std::{cell::Cell, fmt, ptr};
+use std::{cell::Cell, ffi::CString, fmt, ptr};
 
 thread_local! {
     // Keep the counter across deactivation so a new map cannot revive handles.
@@ -92,6 +95,38 @@ impl Context<'_> {
     }
 }
 
+/// Broad engine classification derived from world index and edict flags.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EntityKind {
+    World,
+    Client,
+    FakeClient,
+    Monster,
+    Other,
+}
+
+/// Owned string keyvalues retained in GoldSrc's common entvars fields.
+/// Zero string indices and null engine strings are represented by `None`.
+/// GameDLL-specific map keys may never have been stored in these fields.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EntityKeyValues {
+    pub classname: Option<CString>,
+    pub globalname: Option<CString>,
+    pub target: Option<CString>,
+    pub targetname: Option<CString>,
+    pub model: Option<CString>,
+    pub netname: Option<CString>,
+    pub message: Option<CString>,
+}
+
+/// An owned classification and keyvalue snapshot for an entity allocation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EntityInfo {
+    pub entity: EntityHandle,
+    pub kind: EntityKind,
+    pub keyvalues: EntityKeyValues,
+}
+
 /// Owned spatial fields as reported by the engine at lookup time.
 /// The snapshot remains readable after its entity handle expires.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -167,6 +202,84 @@ impl Context<'_> {
             }
         }
         Ok(found)
+    }
+
+    /// Copy engine classification and common string keyvalues. Returns
+    /// `None` if lookup is unavailable or the allocation expires mid-read.
+    pub fn entity_info(&self, entity: EntityHandle) -> Option<EntityInfo> {
+        let engine = __ffi::engine()?;
+        let lookup = engine.string_from_index?;
+        let edict = entity.resolve(engine)?;
+
+        // SAFETY: The edict has just been validated. Copy flags and offsets
+        // before invoking any engine function that could invalidate it.
+        let (flags, indices) = unsafe {
+            let vars = ptr::addr_of!((*edict).v);
+            (
+                ptr::addr_of!((*vars).flags).read(),
+                [
+                    ptr::addr_of!((*vars).classname).read(),
+                    ptr::addr_of!((*vars).globalname).read(),
+                    ptr::addr_of!((*vars).target).read(),
+                    ptr::addr_of!((*vars).targetname).read(),
+                    ptr::addr_of!((*vars).model).read(),
+                    ptr::addr_of!((*vars).netname).read(),
+                    ptr::addr_of!((*vars).message).read(),
+                ],
+            )
+        };
+        let kind = if entity.index() == 0 {
+            EntityKind::World
+        } else if flags & raw::FL_FAKECLIENT as i32 != 0 {
+            EntityKind::FakeClient
+        } else if flags & raw::FL_CLIENT as i32 != 0 {
+            EntityKind::Client
+        } else if flags & raw::FL_MONSTER as i32 != 0 {
+            EntityKind::Monster
+        } else {
+            EntityKind::Other
+        };
+        let mut strings = [const { None }; 7];
+        for (index, value) in indices.into_iter().zip(&mut strings) {
+            if index == 0 {
+                continue;
+            }
+            if active_map() != Some(entity.map) {
+                return None;
+            }
+            // SAFETY: The bit pattern comes from the engine's own string_t.
+            // GoldSrc uses signed offsets at this callback boundary.
+            let string = unsafe { lookup(index as i32) };
+            if active_map() != Some(entity.map) {
+                return None;
+            }
+            // SAFETY: The current-map engine string can be read until the
+            // next native call. Copy it before revalidating the edict.
+            *value = unsafe { copy_string(string) };
+            entity.resolve(engine)?;
+        }
+        let [
+            classname,
+            globalname,
+            target,
+            targetname,
+            model,
+            netname,
+            message,
+        ] = strings;
+        Some(EntityInfo {
+            entity,
+            kind,
+            keyvalues: EntityKeyValues {
+                classname,
+                globalname,
+                target,
+                targetname,
+                model,
+                netname,
+                message,
+            },
+        })
     }
 
     /// Copy current spatial fields after validating the allocation generation.
