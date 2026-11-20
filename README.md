@@ -3,7 +3,7 @@
 A Rust SDK for native GoldSrc Metamod plugins with server-thread-owned state,
 typed game-DLL hooks, and scoped server access. Bindgen runs at build time.
 
-## Write a plugin
+## Write a Metamod plugin
 
 Set your library's crate type to `cdylib` and add `metamod` as a dependency with
 the optional `macros` feature. The attribute fills in metadata and exports the
@@ -243,6 +243,6 @@ linking exception addresses linking with Valve's engine and mods.
   redistribution terms. [HLSDK license](https://github.com/alliedmodders/hlsdk/blob/a0edb7792a96998d349325bebab8ea41ec5cb239/LICENSE)
 - Metamod-R uses GPLv3. Its loader was checked for the required exports
   and interface version. [Metamod-R](https://github.com/rehlds/Metamod-R/tree/56590c5c70fa95775051888b7fe0a4e285856ebb)
-- The FWGS template illustrates plug-in hook registration and Win32 exports.
+- The FWGS template illustrates Metamod plugin hook registration and Win32 exports.
   The reviewed revision had no top-level license granting reuse of the
   template. [FWGS Metamod plugin template](https://github.com/FWGS/metamod-plugin-template/tree/b9dbed28728722e8fc751200f824f72e3b8e7123)
