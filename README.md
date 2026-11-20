@@ -17,7 +17,7 @@ struct MyPlugin {
     greeted: bool,
 }
 
-#[metamod_plugin(name = "My Plugin", version = "0.1.0", author = "Developer")]
+#[metamod_plugin(cargo, name = "My Plugin")]
 impl Plugin for MyPlugin {
     fn start_frame(&mut self, ctx: &mut Context<'_>) {
         if !self.greeted {
@@ -28,8 +28,22 @@ impl Plugin for MyPlugin {
 }
 ```
 
-The attribute also accepts `date`, `url`, and `log_tag`. With the macro feature
-disabled, declare `const METADATA: Metadata` in your `impl Plugin` using static
+Use `#[metamod_plugin(cargo)]` to inherit the Cargo package name, version,
+authors, and repository URL, including values inherited from the workspace.
+With that opt-in, set a custom display name and log tag in the plugin's
+`Cargo.toml`:
+
+```toml
+[package.metadata.metamod]
+name = "Rust Hello World"
+log_tag = "RUSTHELLO"
+```
+
+Explicit attribute fields take precedence over the metadata table and Cargo
+package defaults. Without `cargo`, supply `name`, `version`,
+and `author`. Without `cargo` or an explicit `url`, the URL is empty.
+The `date` defaults to empty and `log_tag` defaults to the display name.
+With the macro feature disabled, declare `const METADATA: Metadata` in your `impl Plugin` using static
 C strings, then call `export_plugin!(MyPlugin)` once in the library. Both forms
 use the same dispatch. To migrate a stateless plugin, implement `Default`
 and add `&mut self` and `&mut Context<'_>` to its callbacks. Existing

@@ -1,12 +1,15 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use std::ffi::CString;
+use std::{env, ffi::CString, fs, path::PathBuf};
 use syn::{ImplItem, ItemImpl, LitCStr, LitStr, parse_macro_input};
 
 /// Register a concrete `impl Plugin` and supply its static metadata.
 ///
-/// Requires `name`, `version`, and `author`. Optional fields are `date`,
-/// `url`, and `log_tag`. Use once per plugin library.
+/// Requires `name`, `version`, and `author`. Pass `cargo` to fill omitted
+/// fields from the package name, version, authors, and repository URL.
+/// `[package.metadata.metamod]` can set `name` and `log_tag` when using `cargo`.
+/// `date` defaults to empty and `log_tag` defaults to the display name.
+/// Use once per plugin library.
 #[proc_macro_attribute]
 pub fn metamod_plugin(args: TokenStream, input: TokenStream) -> TokenStream {
     let mut implementation = parse_macro_input!(input as ItemImpl);
@@ -34,6 +37,7 @@ fn register(args: TokenStream, implementation: &mut ItemImpl) -> syn::Result<Tok
         ));
     }
 
+    let mut cargo = false;
     let mut name = None;
     let mut version = None;
     let mut author = None;
@@ -41,6 +45,13 @@ fn register(args: TokenStream, implementation: &mut ItemImpl) -> syn::Result<Tok
     let mut url = None;
     let mut log_tag = None;
     let parser = syn::meta::parser(|meta| {
+        if meta.path.is_ident("cargo") {
+            if cargo {
+                return Err(meta.error("duplicate cargo option"));
+            }
+            cargo = true;
+            return Ok(());
+        }
         let field = match meta.path.get_ident().map(ToString::to_string).as_deref() {
             Some("name") => &mut name,
             Some("version") => &mut version,
@@ -62,15 +73,83 @@ fn register(args: TokenStream, implementation: &mut ItemImpl) -> syn::Result<Tok
     syn::parse::Parser::parse(parser, args)?;
 
     let span = implementation.impl_token.span;
-    let required = |value: Option<LitCStr>, field| {
-        value.ok_or_else(|| syn::Error::new(span, format!("missing plugin metadata field {field}")))
+    if cargo {
+        let manifest_dir = env::var_os("CARGO_MANIFEST_DIR")
+            .ok_or_else(|| syn::Error::new(span, "cargo metadata requires CARGO_MANIFEST_DIR"))?;
+        let path = PathBuf::from(manifest_dir).join("Cargo.toml");
+        let manifest = fs::read_to_string(&path)
+            .map_err(|error| syn::Error::new(span, format!("{}: {error}", path.display())))?;
+        let manifest = manifest
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| syn::Error::new(span, format!("{}: {error}", path.display())))?;
+        if let Some(metadata) = manifest
+            .get("package")
+            .and_then(|package| package.get("metadata"))
+            .and_then(|metadata| metadata.get("metamod"))
+        {
+            let metadata = metadata
+                .as_table_like()
+                .ok_or_else(|| syn::Error::new(span, "package.metadata.metamod must be a table"))?;
+            for (key, field) in [("name", &mut name), ("log_tag", &mut log_tag)] {
+                if field.is_none()
+                    && let Some(value) = metadata.get(key)
+                {
+                    let value = value.as_str().ok_or_else(|| {
+                        syn::Error::new(
+                            span,
+                            format!("package.metadata.metamod.{key} must be a string"),
+                        )
+                    })?;
+                    let value = CString::new(value).map_err(|_| {
+                        syn::Error::new(
+                            span,
+                            format!("package.metadata.metamod.{key} cannot contain NUL"),
+                        )
+                    })?;
+                    *field = Some(LitCStr::new(&value, span));
+                }
+            }
+        }
+    }
+    let cargo_default = |value: Option<LitCStr>, variable: &str| {
+        if let Some(value) = value {
+            quote!(#value)
+        } else {
+            // Expand env! in the plugin crate so Cargo tracks its package
+            // metadata, including fields inherited from the workspace.
+            quote! {
+                match ::core::ffi::CStr::from_bytes_with_nul(
+                    ::core::concat!(::core::env!(#variable), "\0").as_bytes()
+                ) {
+                    ::core::result::Result::Ok(value) => value,
+                    ::core::result::Result::Err(_) => {
+                        ::core::panic!(::core::concat!(#variable, " cannot contain NUL"))
+                    }
+                }
+            }
+        }
     };
-    let name = required(name, "name")?;
-    let version = required(version, "version")?;
-    let author = required(author, "author")?;
+    let field = |value: Option<LitCStr>, name, variable| {
+        if cargo || value.is_some() {
+            Ok(cargo_default(value, variable))
+        } else {
+            Err(syn::Error::new(
+                span,
+                format!("missing plugin metadata field {name}"),
+            ))
+        }
+    };
+    let name = field(name, "name", "CARGO_PKG_NAME")?;
+    let version = field(version, "version", "CARGO_PKG_VERSION")?;
+    let author = field(author, "author", "CARGO_PKG_AUTHORS")?;
+    let url = if cargo {
+        cargo_default(url, "CARGO_PKG_REPOSITORY")
+    } else {
+        let url = url.unwrap_or_else(|| LitCStr::new(c"", span));
+        quote!(#url)
+    };
     let date = date.unwrap_or_else(|| LitCStr::new(c"", span));
-    let url = url.unwrap_or_else(|| LitCStr::new(c"", span));
-    let log_tag = log_tag.unwrap_or_else(|| name.clone());
+    let log_tag = log_tag.map_or_else(|| name.clone(), |value| quote!(#value));
     implementation.items.push(syn::parse_quote! {
         const METADATA: ::metamod::Metadata = ::metamod::Metadata {
             name: #name,
@@ -81,9 +160,18 @@ fn register(args: TokenStream, implementation: &mut ItemImpl) -> syn::Result<Tok
             log_tag: #log_tag,
         };
     });
+    // Register the manifest as a rustc input so metadata-only edits rebuild.
+    let track_manifest = cargo.then(|| {
+        quote! {
+            const _: &[u8] = ::core::include_bytes!(
+                ::core::concat!(::core::env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")
+            );
+        }
+    });
     let plugin = &implementation.self_ty;
     Ok(quote! {
         #implementation
+        #track_manifest
         ::metamod::export_plugin!(#plugin);
     }
     .into())
