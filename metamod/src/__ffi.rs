@@ -3,12 +3,15 @@
 
 pub use metamod_sys::*;
 
-use crate::{Context, PlayerId, Plugin};
-use raw::{MetamodIndexOfEdict, MetamodServerPrint, edict_t};
+use crate::{Context, PlayerId, PlayerSlot, Plugin};
+use raw::{MetamodIndexOfEdict, MetamodServerPrint, NEW_DLL_FUNCTIONS, edict_t};
 use std::{
     any::Any,
     cell::{Cell, RefCell},
+    collections::{HashMap, VecDeque},
     ffi::{CStr, c_char, c_int},
+    mem::ManuallyDrop,
+    num::NonZeroU64,
     panic::{AssertUnwindSafe, catch_unwind},
     ptr,
     sync::OnceLock,
@@ -42,10 +45,64 @@ struct Engine {
 
 static OWNER: OnceLock<ThreadId> = OnceLock::new();
 
+#[derive(Clone, Copy)]
+enum Event {
+    Frame,
+    Activate,
+    Deactivate,
+    Join(PlayerId),
+    Disconnect(PlayerId),
+}
+
+struct Events {
+    players: HashMap<PlayerSlot, PlayerId>,
+    serial: u64,
+    pending: VecDeque<Event>,
+}
+
+impl Events {
+    fn join(&mut self, slot: PlayerSlot) -> Option<PlayerId> {
+        self.players.remove(&slot);
+        let serial = NonZeroU64::new(self.serial.checked_add(1)?)?;
+        self.serial = serial.get();
+        let player = PlayerId::new(slot, serial);
+        self.players.insert(slot, player);
+        Some(player)
+    }
+}
+
 thread_local! {
     static STATE: Cell<State> = const { Cell::new(State::Unqueried) };
     static ENGINE: Cell<Engine> = const { Cell::new(Engine { print: None, index: None }) };
-    static INSTANCE: RefCell<Option<&'static mut dyn Any>> = const { RefCell::new(None) };
+    // Only GameShutdown may extract and drop an attached instance. TLS
+    // teardown can occur after the engine has shut down.
+    static INSTANCE: RefCell<Option<ManuallyDrop<Box<dyn Any>>>> = const { RefCell::new(None) };
+    static EVENTS: RefCell<Events> = RefCell::new(Events {
+        players: HashMap::new(), serial: 0, pending: VecDeque::new(),
+    });
+    static RUNNING: Cell<bool> = const { Cell::new(false) };
+    static INDEX_LOOKUP: Cell<Option<bool>> = const { Cell::new(None) };
+    static SHUTDOWN: Cell<bool> = const { Cell::new(false) };
+}
+
+fn wrong_thread() -> bool {
+    OWNER
+        .get()
+        .is_some_and(|owner| *owner != thread::current().id())
+}
+
+pub(crate) fn engine_available() -> bool {
+    !wrong_thread()
+        && SHUTDOWN
+            .try_with(|shutdown| !shutdown.get())
+            .unwrap_or(false)
+}
+
+pub(crate) fn player_at(slot: PlayerSlot) -> Option<PlayerId> {
+    if !engine_available() {
+        return None;
+    }
+    EVENTS.with(|events| events.borrow().players.get(&slot).copied())
 }
 
 /// # Safety
@@ -53,7 +110,10 @@ thread_local! {
 /// remain callable on this thread through the lifetime of the attachment.
 pub unsafe fn give_engine(table: *mut EngineFunctions) {
     let _ = contained(|| {
-        if table.is_null() || !STATE.with(|state| matches!(state.get(), State::Unqueried)) {
+        if wrong_thread()
+            || table.is_null()
+            || !STATE.with(|state| matches!(state.get(), State::Unqueried))
+        {
             return;
         }
         // SAFETY: The loader supplies these initialized slots. Copy them
@@ -126,7 +186,7 @@ pub unsafe fn query(
     utilities: *mut MetaUtilities,
     id: *mut PluginInfo,
 ) -> c_int {
-    if version.is_null() || out.is_null() || utilities.is_null() || id.is_null() {
+    if wrong_thread() || version.is_null() || out.is_null() || utilities.is_null() || id.is_null() {
         return 0;
     }
     contained(|| {
@@ -161,7 +221,7 @@ pub unsafe fn attach<P: Plugin>(
     table: *mut MetaFunctions,
     globals: *mut MetaGlobals,
 ) -> c_int {
-    if now != PT_STARTUP || table.is_null() || globals.is_null() {
+    if wrong_thread() || now != PT_STARTUP || table.is_null() || globals.is_null() {
         return 0;
     }
     contained(|| {
@@ -184,15 +244,13 @@ pub unsafe fn attach<P: Plugin>(
                 return 0;
             }
 
-            // Metamod has no reliable shutdown notification for a resident
-            // plugin. Keep this instance alive until process exit, without a
-            // TLS destructor that could run after the engine shuts down.
-            INSTANCE.with(|instance| instance.replace(Some(Box::leak(plugin))));
+            INSTANCE.with(|instance| instance.replace(Some(ManuallyDrop::new(plugin))));
             // SAFETY: Metamod provided a full writable output table.
             unsafe {
                 table.write(MetaFunctions {
                     pfnGetEntityAPI2: Some(entity_api::<P>),
                     pfnGetEntityAPI2_Post: Some(entity_api_post::<P>),
+                    pfnGetNewDLLFunctions: Some(new_api::<P>),
                     ..Default::default()
                 });
             }
@@ -217,14 +275,14 @@ fn make_context(scope: &(), services: Services) -> Context<'_> {
     )
 }
 
-unsafe fn write_hooks(table: *mut DllFunctions, version: *mut c_int, hooks: DllFunctions) -> c_int {
-    if table.is_null() || version.is_null() {
+unsafe fn write_hooks<T>(table: *mut T, version: *mut c_int, expected: c_int, hooks: T) -> c_int {
+    if wrong_thread() || table.is_null() || version.is_null() {
         return 0;
     }
     // SAFETY: Metamod provides valid version storage and a writable table.
     unsafe {
-        if version.read() != ENTITY_INTERFACE {
-            version.write(ENTITY_INTERFACE);
+        if version.read() != expected {
+            version.write(expected);
             return 0;
         }
         table.write(hooks);
@@ -238,8 +296,10 @@ unsafe extern "C" fn entity_api<P: Plugin>(table: *mut DllFunctions, version: *m
         write_hooks(
             table,
             version,
+            ENTITY_INTERFACE,
             DllFunctions {
                 pfnStartFrame: Some(start_frame::<P>),
+                pfnServerActivate: Some(begin_map),
                 pfnServerDeactivate: Some(server_deactivate::<P>),
                 pfnClientDisconnect: Some(player_disconnect::<P>),
                 ..Default::default()
@@ -257,6 +317,7 @@ unsafe extern "C" fn entity_api_post<P: Plugin>(
         write_hooks(
             table,
             version,
+            ENTITY_INTERFACE,
             DllFunctions {
                 pfnServerActivate: Some(server_activate::<P>),
                 pfnClientPutInServer: Some(player_join::<P>),
@@ -266,78 +327,207 @@ unsafe extern "C" fn entity_api_post<P: Plugin>(
     }
 }
 
-fn dispatch<P: Plugin>(callback: impl FnOnce(&mut P, &mut Context<'_>)) {
+unsafe extern "C" fn new_api<P: Plugin>(
+    table: *mut NEW_DLL_FUNCTIONS,
+    version: *mut c_int,
+) -> c_int {
+    // SAFETY: Metamod supplies the API negotiation arguments.
+    unsafe {
+        write_hooks(
+            table,
+            version,
+            raw::NEW_DLL_FUNCTIONS_VERSION as c_int,
+            NEW_DLL_FUNCTIONS {
+                pfnGameShutdown: Some(game_shutdown::<P>),
+                ..Default::default()
+            },
+        )
+    }
+}
+
+struct Ignored(*mut MetaGlobals);
+
+impl Drop for Ignored {
+    fn drop(&mut self) {
+        // SAFETY: The attached server thread owns the hook result, and
+        // Metamod keeps the globals live for this entire invocation.
+        unsafe { ptr::addr_of_mut!((*self.0).mres).write(MRES_IGNORED) };
+    }
+}
+
+fn hook(callback: impl FnOnce()) {
     let _ = contained(|| {
-        STATE.with(|state| {
-            let State::Attached {
-                services,
-                globals,
-                disabled,
-            } = state.get()
-            else {
-                // An off-thread callback has no attachment and must not
-                // access the server thread's state or Metamod globals.
-                return;
-            };
-            if !disabled {
-                INSTANCE.with(|instance| {
-                    if let Ok(mut slot) = instance.try_borrow_mut()
-                        && let Some(plugin) = slot
-                            .as_deref_mut()
-                            .and_then(|plugin| plugin.downcast_mut::<P>())
-                    {
-                        let scope = ();
-                        let mut context = make_context(&scope, services);
-                        if contained(|| callback(plugin, &mut context)).is_none() {
-                            state.set(State::Attached {
-                                services,
-                                globals,
-                                disabled: true,
-                            });
-                        }
-                    }
-                });
-            }
-            // SAFETY: Globals stay live on the server thread while attached.
-            // Also restore the result after recursive or disabled dispatch.
-            unsafe { ptr::addr_of_mut!((*globals).mres).write(MRES_IGNORED) };
-        });
-    });
-}
-
-unsafe extern "C" fn start_frame<P: Plugin>() {
-    dispatch(P::start_frame);
-}
-
-unsafe extern "C" fn server_activate<P: Plugin>(_: *mut edict_t, _: c_int, _: c_int) {
-    dispatch(P::server_activate);
-}
-
-unsafe extern "C" fn server_deactivate<P: Plugin>() {
-    dispatch(P::server_deactivate);
-}
-
-fn dispatch_player<P: Plugin>(
-    edict: *mut edict_t,
-    callback: impl FnOnce(&mut P, &mut Context<'_>, PlayerId),
-) {
-    dispatch(|plugin, context| {
-        if let Some(index) = ENGINE.get().index
-            && !edict.is_null()
-            // SAFETY: Metamod supplied a live player edict for this callback.
-            && let Some(player) = PlayerId::from_index(unsafe { index(edict) })
-        {
-            callback(plugin, context, player);
+        if wrong_thread() {
+            return;
+        }
+        if let State::Attached { globals, .. } = STATE.get() {
+            let _result = Ignored(globals);
+            callback();
         }
     });
 }
 
+fn submit<P: Plugin>(event: Event) {
+    let State::Attached {
+        disabled: false, ..
+    } = STATE.get()
+    else {
+        return;
+    };
+    if SHUTDOWN.get() || matches!(event, Event::Frame) && RUNNING.get() {
+        return;
+    }
+    EVENTS.with(|events| events.borrow_mut().pending.push_back(event));
+    drain::<P>();
+}
+
+struct Running;
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        RUNNING.set(false);
+    }
+}
+
+fn drain<P: Plugin>() {
+    if RUNNING.replace(true) {
+        return;
+    }
+    let _running = Running;
+    let State::Attached {
+        services, globals, ..
+    } = STATE.get()
+    else {
+        return;
+    };
+
+    while !SHUTDOWN.get() {
+        let Some(event) = EVENTS.with(|events| events.borrow_mut().pending.pop_front()) else {
+            break;
+        };
+        let result = contained(|| {
+            INSTANCE.with(|instance| {
+                let mut slot = instance.borrow_mut();
+                let plugin = slot.as_mut().and_then(|plugin| plugin.downcast_mut::<P>());
+                if let Some(plugin) = plugin {
+                    let scope = ();
+                    let mut context = make_context(&scope, services);
+                    match event {
+                        Event::Frame => plugin.start_frame(&mut context),
+                        Event::Activate => plugin.server_activate(&mut context),
+                        Event::Deactivate => plugin.server_deactivate(&mut context),
+                        Event::Join(player) => plugin.player_join(&mut context, player),
+                        Event::Disconnect(player) => plugin.player_disconnect(&mut context, player),
+                    }
+                }
+            });
+        });
+        if result.is_none() {
+            STATE.set(State::Attached {
+                services,
+                globals,
+                disabled: true,
+            });
+            EVENTS.with(|events| events.borrow_mut().pending.clear());
+            break;
+        }
+    }
+    if SHUTDOWN.get()
+        && let Some(instance) = INSTANCE.with(|instance| instance.take())
+    {
+        let mut instance = ManuallyDrop::into_inner(instance);
+        if matches!(
+            STATE.get(),
+            State::Attached {
+                disabled: false,
+                ..
+            }
+        ) {
+            let _ = contained(|| {
+                if let Some(plugin) = instance.downcast_mut::<P>() {
+                    plugin.shutdown();
+                }
+            });
+        }
+        let _ = contained(|| drop(instance));
+    }
+}
+
+fn reset_players() {
+    if INDEX_LOOKUP.get().is_some() {
+        INDEX_LOOKUP.set(Some(true));
+    }
+    EVENTS.with(|events| events.borrow_mut().players.clear());
+}
+
+fn player_slot(edict: *mut edict_t) -> Option<PlayerSlot> {
+    let index = ENGINE.get().index?;
+    if edict.is_null() || SHUTDOWN.get() {
+        return None;
+    }
+    if INDEX_LOOKUP.get().is_some() {
+        // A hook reentered slot resolution through an engine wrapper. The
+        // outer edict may no longer identify its original session.
+        reset_players();
+        return None;
+    }
+    INDEX_LOOKUP.set(Some(false));
+    // SAFETY: Metamod supplied a live edict for this synchronous lookup.
+    let index = unsafe { index(edict) };
+    if INDEX_LOOKUP.replace(None) == Some(false) {
+        PlayerSlot::from_index(index)
+    } else {
+        None
+    }
+}
+
+unsafe extern "C" fn start_frame<P: Plugin>() {
+    hook(|| submit::<P>(Event::Frame));
+}
+
+unsafe extern "C" fn begin_map(_: *mut edict_t, _: c_int, _: c_int) {
+    hook(reset_players);
+}
+
+unsafe extern "C" fn server_activate<P: Plugin>(_: *mut edict_t, _: c_int, _: c_int) {
+    hook(|| submit::<P>(Event::Activate));
+}
+
+unsafe extern "C" fn server_deactivate<P: Plugin>() {
+    hook(|| {
+        reset_players();
+        submit::<P>(Event::Deactivate);
+    });
+}
+
 unsafe extern "C" fn player_join<P: Plugin>(edict: *mut edict_t) {
-    dispatch_player(edict, P::player_join);
+    hook(|| {
+        if let Some(slot) = player_slot(edict)
+            && let Some(player) = EVENTS.with(|events| events.borrow_mut().join(slot))
+        {
+            submit::<P>(Event::Join(player));
+        }
+    });
 }
 
 unsafe extern "C" fn player_disconnect<P: Plugin>(edict: *mut edict_t) {
-    dispatch_player(edict, P::player_disconnect);
+    hook(|| {
+        if let Some(slot) = player_slot(edict)
+            && let Some(player) = EVENTS.with(|events| events.borrow_mut().players.remove(&slot))
+        {
+            submit::<P>(Event::Disconnect(player));
+        }
+    });
+}
+
+unsafe extern "C" fn game_shutdown<P: Plugin>() {
+    hook(|| {
+        if !SHUTDOWN.replace(true) {
+            reset_players();
+            EVENTS.with(|events| events.borrow_mut().pending.clear());
+            drain::<P>();
+        }
+    });
 }
 
 #[cfg(test)]
@@ -363,19 +553,38 @@ mod tests {
     }
 
     #[test]
-    fn recursive_and_off_thread_dispatch_is_skipped_and_panic_disables_all_hooks() {
+    fn nested_lifecycle_is_deferred_and_panic_disables_user_hooks() {
         #[derive(Default)]
         struct TestPlugin {
-            calls: usize,
+            trace: Vec<&'static str>,
         }
 
         impl Plugin for TestPlugin {
             const METADATA: Metadata = METADATA;
 
-            fn start_frame(&mut self, _: &mut Context<'_>) {
-                self.calls += 1;
-                dispatch::<Self>(|plugin, _| plugin.calls += 100);
+            fn start_frame(&mut self, ctx: &mut Context<'_>) {
+                self.trace.push("frame");
+                let slot = PlayerSlot::from_index(7).unwrap();
+                let player = EVENTS
+                    .with(|events| events.borrow_mut().join(slot))
+                    .unwrap();
+                assert!(ctx.is_player_current(player));
+                // SAFETY: These synthetic hooks run on the attached thread.
+                unsafe {
+                    start_frame::<Self>();
+                    server_deactivate::<Self>();
+                }
+                assert!(!ctx.is_player_current(player));
+                self.trace.push("frame end");
+            }
+
+            fn server_deactivate(&mut self, _: &mut Context<'_>) {
+                self.trace.push("deactivate");
                 panic!("disable all callbacks");
+            }
+
+            fn server_activate(&mut self, _: &mut Context<'_>) {
+                self.trace.push("activate");
             }
         }
 
@@ -385,40 +594,114 @@ mod tests {
             ..Default::default()
         };
         let mut functions = MetaFunctions::default();
-        // SAFETY: This test keeps its foreign output storage live on this thread.
-        assert_eq!(
-            unsafe { attach::<TestPlugin>(PT_STARTUP, &mut functions, &mut globals) },
-            1
-        );
-        let off_thread_ran = thread::spawn(|| {
-            let mut ran = false;
-            dispatch::<TestPlugin>(|_, _| ran = true);
-            ran
-        })
-        .join()
-        .unwrap();
-        assert!(!off_thread_ran);
-        dispatch::<TestPlugin>(|plugin, ctx| plugin.start_frame(ctx));
+        // SAFETY: The test keeps its foreign output storage live.
+        unsafe {
+            assert_eq!(
+                attach::<TestPlugin>(PT_STARTUP, &mut functions, &mut globals),
+                1
+            );
+            thread::spawn(|| start_frame::<TestPlugin>())
+                .join()
+                .unwrap();
+            assert_eq!(globals.mres, MRES_UNSET);
+            start_frame::<TestPlugin>();
+            assert_eq!(globals.mres, MRES_IGNORED);
+            assert_eq!(globals.prev_mres, MRES_HANDLED);
+            globals.mres = MRES_UNSET;
+            server_activate::<TestPlugin>(ptr::null_mut(), 0, 0);
+        }
         assert_eq!(globals.mres, MRES_IGNORED);
-        assert_eq!(globals.prev_mres, MRES_HANDLED);
+        INSTANCE.with(|instance| {
+            let slot = instance.borrow();
+            let plugin = slot.as_ref().unwrap().downcast_ref::<TestPlugin>().unwrap();
+            assert_eq!(plugin.trace, ["frame", "frame end", "deactivate"]);
+        });
         assert!(matches!(
             STATE.get(),
             State::Attached { disabled: true, .. }
         ));
-        globals.mres = MRES_UNSET;
-        dispatch::<TestPlugin>(|plugin, _| plugin.calls += 1);
-        assert_eq!(globals.mres, MRES_IGNORED);
-        INSTANCE.with(|instance| {
-            let mut slot = instance.borrow_mut();
-            let plugin = slot
-                .as_deref_mut()
-                .unwrap()
-                .downcast_mut::<TestPlugin>()
-                .unwrap();
-            assert_eq!(plugin.calls, 1);
-        });
-        STATE.set(State::Unqueried);
-        INSTANCE.with(|instance| instance.take());
+        // SAFETY: Shutdown is delivered on the same thread with live globals.
+        unsafe { game_shutdown::<TestPlugin>() };
+        assert!(INSTANCE.with(|instance| instance.borrow().is_none()));
+    }
+
+    #[test]
+    fn session_ids_expire_on_disconnect_slot_reuse_and_map_boundaries() {
+        let slot = PlayerSlot::from_index(7).unwrap();
+        let first = EVENTS
+            .with(|events| events.borrow_mut().join(slot))
+            .unwrap();
+        assert_eq!(player_at(slot), Some(first));
+        let ended = EVENTS.with(|events| events.borrow_mut().players.remove(&slot));
+        assert_eq!(ended, Some(first));
+        assert_eq!(player_at(slot), None);
+        let second = EVENTS
+            .with(|events| events.borrow_mut().join(slot))
+            .unwrap();
+        assert_ne!(first, second);
+        reset_players();
+        assert_eq!(player_at(slot), None);
+        let third = EVENTS
+            .with(|events| events.borrow_mut().join(slot))
+            .unwrap();
+        assert_ne!(second, third);
+        let replacement = EVENTS
+            .with(|events| events.borrow_mut().join(slot))
+            .unwrap();
+        assert_ne!(third, replacement);
+        assert_eq!(player_at(slot), Some(replacement));
+    }
+
+    #[test]
+    fn nested_shutdown_revokes_engine_access_and_cleans_up_once() {
+        #[derive(Default)]
+        struct TestPlugin;
+
+        thread_local! {
+            static TRACE: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+        }
+
+        impl Plugin for TestPlugin {
+            const METADATA: Metadata = METADATA;
+
+            fn start_frame(&mut self, _: &mut Context<'_>) {
+                assert!(engine_available());
+                // SAFETY: The test supplies live globals on this thread.
+                unsafe { game_shutdown::<Self>() };
+                assert!(!engine_available());
+                TRACE.with(|trace| trace.borrow_mut().push("frame end"));
+            }
+
+            fn shutdown(&mut self) {
+                TRACE.with(|trace| trace.borrow_mut().push("shutdown"));
+                panic!("cleanup panic");
+            }
+        }
+
+        impl Drop for TestPlugin {
+            fn drop(&mut self) {
+                TRACE.with(|trace| trace.borrow_mut().push("drop"));
+                panic!("destructor panic");
+            }
+        }
+
+        queried();
+        let mut globals = MetaGlobals::default();
+        let mut functions = MetaFunctions::default();
+        // SAFETY: All calls use the attached thread and live globals.
+        unsafe {
+            assert_eq!(
+                attach::<TestPlugin>(PT_STARTUP, &mut functions, &mut globals),
+                1
+            );
+            start_frame::<TestPlugin>();
+            assert_eq!(globals.mres, MRES_IGNORED);
+            globals.mres = MRES_UNSET;
+            game_shutdown::<TestPlugin>();
+            assert_eq!(globals.mres, MRES_IGNORED);
+        }
+        TRACE.with(|trace| assert_eq!(*trace.borrow(), ["frame end", "shutdown", "drop"]));
+        assert!(INSTANCE.with(|instance| instance.borrow().is_none()));
     }
 
     #[test]

@@ -42,12 +42,21 @@ and add `&mut self` and `&mut Context<'_>` to its callbacks. Existing
 | `server_activate` | After the game DLL activates the map. |
 | `server_deactivate` | Before the game DLL deactivates the map. |
 | `player_join` | After the game DLL puts a player into the server. |
-| `player_disconnect` | Before the game DLL disconnects a player. |
+| `player_disconnect` | When the SDK observes a disconnect and invalidates the session, normally before the game DLL callback. |
+| `shutdown` | If Metamod forwards `GameShutdown`, once before the SDK drops the plugin instance. Engine access is unavailable. |
 
-Player hooks receive a `PlayerId` resolved through GoldSrc. It represents a
-one-based slot, which the engine can reuse after disconnect. Use the lifecycle
-hooks to clear map-specific state. Use `ctx.server().print(&str)` for console
-messages within a callback.
+`PlayerSlot` is a reusable one-based engine index. `PlayerId` identifies an
+observed session in that slot for the current map. Keep the full ID as the
+key for per-player state. `player.slot().get()` and the older `player.get()`
+return the slot number for display. Use `ctx.is_player_current(id)` to validate
+a saved ID and `ctx.player_at(slot)` to look up the session currently tracked
+in a slot. A disconnect, slot replacement, or map boundary invalidates old
+IDs immediately. Tracking depends on the host delivering its normal join,
+disconnect, and map callbacks on the server thread. It covers players whose
+joins the plugin observed.
+
+Use the lifecycle hooks to clear map-specific state and
+`ctx.server().print(&str)` for console messages within a callback.
 
 ## Build and install hello-world
 
@@ -124,19 +133,31 @@ line and shared library.
   outlive their callbacks. An off-thread hook skips user code and leaves
   server-thread globals alone.
 - Query accepts interface major 5 with minor 13 or newer. Both pre- and
-  post-`GetEntityAPI2` factories negotiate game-DLL interface 140. All
-  registered hooks are observational. They set `MRES_IGNORED` on the attached
-  thread, including on skipped recursive calls or after a panic.
-- A thread-local checked mutable borrow guards the entire callback, including
-  engine calls that can reenter through a different hook. Construction or
-  initialization panic fails attach. A rejected or failed instance is
-  dropped with separate panic containment. A hook panic disables all user
-  hooks for that instance. Build with the default unwind strategy. Aborting
-  panics, panics in panic hooks, and foreign faults can terminate the server.
-- Plugins load at startup and refuse detach. A successfully attached instance
-  stays resident until process exit, with no guaranteed shutdown destructor.
-  Release map-specific resources during `server_deactivate`. Metamod can
-  bypass detach refusal on forced unload, which the SDK does not support.
+  post-`GetEntityAPI2` factories negotiate game-DLL interface 140. The optional
+  new-DLL table negotiates its own version and observes `GameShutdown`. All
+  attached server-thread hooks set `MRES_IGNORED`, including skipped,
+  deferred, disabled, and panicking invocations.
+- Nested frame callbacks are skipped. Nested map and player notifications
+  are queued in arrival order and delivered after the active Rust callback
+  releases its mutable state borrow. Only owned event data enters the queue.
+  The SDK updates session tracking immediately. A deferred callback can
+  therefore observe an event for a session or map that has already ended.
+  If another player or map event interrupts engine slot resolution, tracking
+  is cleared and the ambiguous lookup is discarded.
+- Construction or initialization panic fails attach. A rejected or failed
+  instance is dropped with separate panic containment. A hook panic discards
+  pending notifications and disables user hooks while SDK bookkeeping and
+  hook results continue. Use the default unwind strategy. Aborting panics,
+  double panics, panics in panic hooks, and foreign faults can terminate the
+  server.
+- Plugins load at startup and advertise `PT_NEVER`, refusing detach. Use
+  `server_deactivate` for map-specific cleanup. If Metamod forwards
+  `GameShutdown`, the SDK revokes engine access, discards pending notifications,
+  and runs `shutdown` on a healthy instance once the current Rust callback
+  returns. It then attempts to drop the instance even if a hook or cleanup
+  panicked. The host can omit this signal, in which case the instance stays
+  resident without an implicit thread-exit destructor. Forced unload and
+  engine restart in the same attachment are unsupported.
 
 On Win32 the export macro uses stdcall for `GiveFnptrsToDll` and cdecl
 for the Metamod entry points. Metamod resolves these exports by name.
@@ -164,9 +185,10 @@ The platform scripts check the x86 binary and its four named exports, compare
 C++ and Rust sizes, alignments, and field offsets, and load the actual plugin
 with `dlopen` or `LoadLibrary`. The shared loader exercises version negotiation,
 metadata stability, startup-only attach, both hook tables, engine printing,
-player-slot translation, cross-hook reentry, hook results, and detach refusal.
-Rust tests cover failed initialization, panicking destructors, off-thread
-dispatch, and callback disabling after panic.
+player-slot translation, deferred cross-hook notifications, hook results,
+shutdown negotiation, and detach refusal. Rust tests cover identity
+invalidation, failed initialization, panicking cleanup and destructors,
+off-thread dispatch, and callback disabling after panic.
 The Linux script accepts two optional paths for comparing against separate C++
 reference checkouts. Binding generation always uses the submodules.
 

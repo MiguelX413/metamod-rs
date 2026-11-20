@@ -46,5 +46,8 @@ int main() {
     std::printf("pfnServerDeactivate %zu\n", offsetof(DLL_FUNCTIONS, pfnServerDeactivate));
     std::printf("pfnClientPutInServer %zu\n", offsetof(DLL_FUNCTIONS, pfnClientPutInServer));
     std::printf("pfnClientDisconnect %zu\n", offsetof(DLL_FUNCTIONS, pfnClientDisconnect));
+    std::printf("NewDllFunctions %zu %zu\n", sizeof(NEW_DLL_FUNCTIONS), alignof(NEW_DLL_FUNCTIONS));
+    std::printf("pfnGameShutdown %zu\n", offsetof(NEW_DLL_FUNCTIONS, pfnGameShutdown));
+    std::printf("new_dll_version %d\n", NEW_DLL_FUNCTIONS_VERSION);
     std::printf("constants %s %d %d %d %d\n", META_INTERFACE_VERSION, INTERFACE_VERSION, PT_NEVER, PT_STARTUP, MRES_IGNORED);
 }

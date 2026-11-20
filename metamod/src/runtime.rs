@@ -2,21 +2,42 @@ use metamod_sys::{Log, PluginInfo, raw::MetamodServerPrint};
 use std::{
     ffi::{CStr, CString},
     marker::PhantomData,
-    num::NonZeroU32,
+    num::{NonZeroU32, NonZeroU64},
 };
 
-/// An engine player slot. The server can reuse this number after disconnect.
+/// A one-based engine slot. GoldSrc can reuse it for a different player.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct PlayerId(NonZeroU32);
+pub struct PlayerSlot(NonZeroU32);
 
-impl PlayerId {
+impl PlayerSlot {
     pub(crate) fn from_index(index: i32) -> Option<Self> {
         Some(Self(NonZeroU32::new(u32::try_from(index).ok()?)?))
     }
 
-    /// The one-based slot reported by GoldSrc.
     pub fn get(self) -> u32 {
         self.0.get()
+    }
+}
+
+/// A player session observed by this plugin, scoped to a map.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PlayerId {
+    slot: PlayerSlot,
+    serial: NonZeroU64,
+}
+
+impl PlayerId {
+    pub(crate) fn new(slot: PlayerSlot, serial: NonZeroU64) -> Self {
+        Self { slot, serial }
+    }
+
+    pub fn slot(self) -> PlayerSlot {
+        self.slot
+    }
+
+    /// The slot number for display. Use the full ID for identity comparisons.
+    pub fn get(self) -> u32 {
+        self.slot.get()
     }
 }
 
@@ -55,6 +76,16 @@ impl<'callback> Context<'callback> {
         Server { context: self }
     }
 
+    /// Look up the currently observed session in a reusable slot.
+    pub fn player_at(&self, slot: PlayerSlot) -> Option<PlayerId> {
+        crate::__ffi::player_at(slot)
+    }
+
+    /// Whether this exact session is still tracked on the current map.
+    pub fn is_player_current(&self, player: PlayerId) -> bool {
+        self.player_at(player.slot()) == Some(player)
+    }
+
     /// Write a message through Metamod's server log utility when available.
     pub fn log(&self, message: &CStr) {
         self.write(self.log, message);
@@ -66,7 +97,9 @@ impl<'callback> Context<'callback> {
     }
 
     fn write(&self, callback: Log, message: &CStr) {
-        if let Some(log) = callback {
+        if crate::__ffi::engine_available()
+            && let Some(log) = callback
+        {
             // SAFETY: The loader supplied the callback and plugin ID.
             unsafe { log(self.id, c"%s".as_ptr(), message.as_ptr()) };
         }
@@ -77,6 +110,9 @@ impl Server<'_, '_> {
     /// Print a line to the server console. Embedded NULs become replacement
     /// characters. Falls back to Metamod's console utility if needed.
     pub fn print(&self, message: &str) {
+        if !crate::__ffi::engine_available() {
+            return;
+        }
         let mut bytes = message.replace('\0', "�").into_bytes();
         if let Some(print) = self.context.print {
             if !bytes.ends_with(b"\n") {

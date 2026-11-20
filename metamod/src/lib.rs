@@ -6,7 +6,7 @@ use std::ffi::CStr;
 pub mod __ffi;
 mod runtime;
 
-pub use runtime::{Context, PlayerId, Server};
+pub use runtime::{Context, PlayerId, PlayerSlot, Server};
 
 #[cfg(feature = "macros")]
 pub use metamod_macros::metamod_plugin;
@@ -14,7 +14,7 @@ pub use metamod_macros::metamod_plugin;
 pub mod prelude {
     #[cfg(feature = "macros")]
     pub use crate::metamod_plugin;
-    pub use crate::{Context, Metadata, PlayerId, Plugin, Server, export_plugin};
+    pub use crate::{Context, Metadata, PlayerId, PlayerSlot, Plugin, Server, export_plugin};
 }
 
 /// Strings remain available to Metamod for the lifetime of the module.
@@ -36,6 +36,10 @@ pub trait Plugin: Default + 'static {
         true
     }
 
+    /// Best-effort cleanup when Metamod forwards the game-DLL shutdown hook.
+    /// The SDK drops this instance afterward. Engine access is unavailable.
+    fn shutdown(&mut self) {}
+
     fn start_frame(&mut self, _context: &mut Context<'_>) {}
 
     /// Called after the game DLL activates the map.
@@ -44,10 +48,10 @@ pub trait Plugin: Default + 'static {
     /// Called before the game DLL deactivates the map.
     fn server_deactivate(&mut self, _context: &mut Context<'_>) {}
 
-    /// Called after the game DLL puts the player into the server.
+    /// Observes a session after the game DLL puts the player into the server.
     fn player_join(&mut self, _context: &mut Context<'_>, _player: PlayerId) {}
 
-    /// Called before the game DLL disconnects the player.
+    /// Observes a session ending. The ID is already invalidated.
     fn player_disconnect(&mut self, _context: &mut Context<'_>, _player: PlayerId) {}
 }
 

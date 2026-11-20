@@ -115,6 +115,16 @@ fn main() {
         offset_of!(DllFunctions, pfnClientDisconnect)
     );
     println!(
+        "NewDllFunctions {} {}",
+        size_of::<raw::NEW_DLL_FUNCTIONS>(),
+        align_of::<raw::NEW_DLL_FUNCTIONS>()
+    );
+    println!(
+        "pfnGameShutdown {}",
+        offset_of!(raw::NEW_DLL_FUNCTIONS, pfnGameShutdown)
+    );
+    println!("new_dll_version {}", raw::NEW_DLL_FUNCTIONS_VERSION);
+    println!(
         "constants {} {} {} {} {}",
         META_INTERFACE.to_str().unwrap(),
         ENTITY_INTERFACE,

@@ -24,8 +24,9 @@ static void server_print(const char *message) {
         "Hello from Rust Metamod\n",
         "Rust StartFrame hook ran\n",
         "Hello, player in slot 7!\n",
+        "Hello, player in slot 7!\n",
     };
-    assert(logged < 3 && std::strcmp(message, expected[logged]) == 0);
+    assert(logged < 4 && std::strcmp(message, expected[logged]) == 0);
     std::fputs(message, stdout);
     if (++logged == 2) {
         // Reenter through a different user hook while the frame owns state.
@@ -91,7 +92,14 @@ int main(int argc, char **argv) {
     assert(functions.pfnGetEntityAPI2_Post(&post_hooks, &version));
     assert(post_hooks.pfnClientPutInServer && !post_hooks.pfnClientDisconnect);
     assert(hooks.pfnClientDisconnect && !hooks.pfnClientPutInServer);
-    assert(post_hooks.pfnServerActivate && hooks.pfnServerDeactivate);
+    assert(post_hooks.pfnServerActivate && hooks.pfnServerActivate && hooks.pfnServerDeactivate);
+    NEW_DLL_FUNCTIONS new_hooks{};
+    version = 0;
+    assert(functions.pfnGetNewDLLFunctions && !functions.pfnGetNewDLLFunctions(&new_hooks, &version));
+    assert(version == NEW_DLL_FUNCTIONS_VERSION && !new_hooks.pfnGameShutdown);
+    assert(functions.pfnGetNewDLLFunctions(&new_hooks, &version));
+    assert(new_hooks.pfnGameShutdown && !new_hooks.pfnShouldCollide);
+    hooks.pfnServerActivate(nullptr, 0, 0);
     globals.mres = MRES_UNSET;
     post_hooks.pfnServerActivate(nullptr, 0, 0);
     assert(globals.mres == MRES_IGNORED);
@@ -101,13 +109,14 @@ int main(int argc, char **argv) {
         hooks.pfnStartFrame();
         assert(globals.mres == MRES_IGNORED);
     }
-    assert(logged == 2);
+    // The reentrant join was queued and delivered after the frame.
+    assert(logged == 3);
     globals.mres = MRES_UNSET;
     post_hooks.pfnClientPutInServer(nullptr);
-    assert(logged == 2 && globals.mres == MRES_IGNORED);
+    assert(logged == 3 && globals.mres == MRES_IGNORED);
     globals.mres = MRES_UNSET;
     post_hooks.pfnClientPutInServer(&player);
-    assert(logged == 3 && globals.mres == MRES_IGNORED);
+    assert(logged == 4 && globals.mres == MRES_IGNORED);
     globals.mres = MRES_UNSET;
     hooks.pfnClientDisconnect(&player);
     assert(globals.mres == MRES_IGNORED);
@@ -116,4 +125,10 @@ int main(int argc, char **argv) {
     assert(globals.mres == MRES_IGNORED);
     assert(!detach(PT_ANYTIME, PNL_COMMAND));
     assert(!detach(PT_ANYTIME, PNL_CMD_FORCED));
+    globals.mres = MRES_UNSET;
+    new_hooks.pfnGameShutdown();
+    assert(globals.mres == MRES_IGNORED);
+    globals.mres = MRES_UNSET;
+    post_hooks.pfnClientPutInServer(&player);
+    assert(logged == 4 && globals.mres == MRES_IGNORED);
 }
