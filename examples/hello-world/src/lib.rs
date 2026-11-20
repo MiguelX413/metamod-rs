@@ -9,7 +9,9 @@ struct HelloWorld {
 #[metamod_plugin(cargo)]
 impl Plugin for HelloWorld {
     fn initialize(&mut self, ctx: &mut Context<'_>) -> bool {
-        ctx.server().print(c"Hello from Rust Metamod");
+        let server = ctx.server();
+        server.print(c"Hello from Rust Metamod");
+        server.print(c"\n");
         true
     }
 
@@ -22,7 +24,7 @@ impl Plugin for HelloWorld {
 
     fn player_join(&mut self, ctx: &mut Context<'_>, player: PlayerId) {
         if ctx.is_player_current(player)
-            && let Ok(message) = CString::new(format!("Hello, player in slot {}!", player.slot()))
+            && let Ok(message) = CString::new(format!("Hello, player in slot {}!\n", player.slot()))
         {
             ctx.server().print(&message);
         }

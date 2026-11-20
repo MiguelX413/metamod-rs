@@ -147,8 +147,15 @@ static void server_print(const char *message) {
         std::fputs(message, stdout);
         return;
     }
+    static bool hello_newline = false;
+    if (!engine_demo && logged == 1 && !hello_newline) {
+        assert(std::strcmp(message, "\n") == 0);
+        hello_newline = true;
+        std::fputs(message, stdout);
+        return;
+    }
     static const char *hello_output[] = {
-        "Hello from Rust Metamod\n",
+        "Hello from Rust Metamod",
         "Rust StartFrame hook ran\n",
         "Hello, player in slot 7!\n",
     };

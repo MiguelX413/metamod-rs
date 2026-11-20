@@ -24,7 +24,7 @@ impl Plugin for EngineDemo {
     fn key_value(&mut self, ctx: &mut Context<'_>, event: &KeyValueEvent) {
         if event.key.as_c_str() == c"classname" {
             ctx.server().print(&c_string(format!(
-                "Map classname: {}",
+                "Map classname: {}\n",
                 event.value.to_string_lossy()
             )));
         }
@@ -49,7 +49,7 @@ impl Plugin for EngineDemo {
     }
 
     fn initialize(&mut self, ctx: &mut Context<'_>) -> bool {
-        ctx.server().print(c"Rust Engine Demo loaded");
+        ctx.server().print(c"Rust Engine Demo loaded\n");
         true
     }
 
@@ -62,26 +62,30 @@ impl Plugin for EngineDemo {
                 Ok(None) => {
                     if let Err(error) = server.register_cvar(MESSAGE, c"Hello from Rust!") {
                         server.print(&c_string(format!(
-                            "Could not register rust_hello_message: {error}"
+                            "Could not register rust_hello_message: {error}\n"
                         )));
                     }
                 }
                 Err(error) => server.print(&c_string(format!(
-                    "Could not read rust_hello_message: {error}"
+                    "Could not read rust_hello_message: {error}\n"
                 ))),
             }
             if let Err(error) = server.register_command(c"rust_hello") {
-                server.print(&c_string(format!("Could not register rust_hello: {error}")));
+                server.print(&c_string(format!(
+                    "Could not register rust_hello: {error}\n"
+                )));
             }
             if let Err(error) = server.register_command(c"rust_trace") {
-                server.print(&c_string(format!("Could not register rust_trace: {error}")));
+                server.print(&c_string(format!(
+                    "Could not register rust_trace: {error}\n"
+                )));
             }
             if let Err(error) = server.register_command(c"rust_entities") {
                 server.print(&c_string(format!(
-                    "Could not register rust_entities: {error}"
+                    "Could not register rust_entities: {error}\n"
                 )));
             }
-            server.print(c"Rust Engine Demo first frame");
+            server.print(c"Rust Engine Demo first frame\n");
         }
     }
 
@@ -90,7 +94,7 @@ impl Plugin for EngineDemo {
         if command.name() == c"rust_entities" {
             let entities = if let Some(argument) = command.arg(0) {
                 let Ok(index) = argument.to_string_lossy().parse::<i32>() else {
-                    server.print(c"rust_entities expects an integer edict index");
+                    server.print(c"rust_entities expects an integer edict index\n");
                     return;
                 };
                 ctx.entity_at(index)
@@ -100,7 +104,7 @@ impl Plugin for EngineDemo {
             };
             match entities {
                 Ok(entities) => {
-                    server.print(&c_string(format!("Visible entities: {}", entities.len())));
+                    server.print(&c_string(format!("Visible entities: {}\n", entities.len())));
                     for entity in entities {
                         if let (Some(info), Some(spatial)) =
                             (ctx.entity_info(entity), ctx.entity_spatial(entity))
@@ -116,7 +120,7 @@ impl Plugin for EngineDemo {
                                 .as_deref()
                                 .map_or_else(|| "<unset>".into(), |name| name.to_string_lossy());
                             server.print(&c_string(format!(
-                                "Entity {} {:?} class={} targetname={} origin: {:?}",
+                                "Entity {} {:?} class={} targetname={} origin: {:?}\n",
                                 entity.index(),
                                 info.kind,
                                 classname,
@@ -126,7 +130,9 @@ impl Plugin for EngineDemo {
                         }
                     }
                 }
-                Err(error) => server.print(&c_string(format!("Entity discovery failed: {error}"))),
+                Err(error) => {
+                    server.print(&c_string(format!("Entity discovery failed: {error}\n")))
+                }
             }
             return;
         }
@@ -137,7 +143,7 @@ impl Plugin for EngineDemo {
                 Ok(line) => {
                     let hit = line.hit.filter(|hit| ctx.is_entity_current(*hit));
                     server.print(&c_string(format!(
-                        "Line fraction: {}, hit: {:?}",
+                        "Line fraction: {}, hit: {:?}\n",
                         line.fraction,
                         hit.map(EntityHandle::index)
                     )));
@@ -147,14 +153,14 @@ impl Plugin for EngineDemo {
                     };
                     match server.trace_hull(start, end, Hull::Human, options) {
                         Ok(hull) => {
-                            server.print(&c_string(format!("Hull fraction: {}", hull.fraction)))
+                            server.print(&c_string(format!("Hull fraction: {}\n", hull.fraction)))
                         }
                         Err(error) => {
-                            server.print(&c_string(format!("Hull trace failed: {error}")))
+                            server.print(&c_string(format!("Hull trace failed: {error}\n")))
                         }
                     }
                 }
-                Err(error) => server.print(&c_string(format!("Line trace failed: {error}"))),
+                Err(error) => server.print(&c_string(format!("Line trace failed: {error}\n"))),
             }
             return;
         }
@@ -162,15 +168,21 @@ impl Plugin for EngineDemo {
             && let Err(error) = server.set_cvar(MESSAGE, argument)
         {
             server.print(&c_string(format!(
-                "Could not update rust_hello_message: {error}"
+                "Could not update rust_hello_message: {error}\n"
             )));
             return;
         }
         match server.cvar(MESSAGE) {
-            Ok(Some(message)) => server.print(&message),
-            Ok(None) => server.print(c"rust_hello_message is unavailable"),
+            Ok(Some(message)) => {
+                let mut line = message.into_bytes();
+                if !line.ends_with(b"\n") {
+                    line.push(b'\n');
+                }
+                server.print(&c_string(line));
+            }
+            Ok(None) => server.print(c"rust_hello_message is unavailable\n"),
             Err(error) => server.print(&c_string(format!(
-                "Could not read rust_hello_message: {error}"
+                "Could not read rust_hello_message: {error}\n"
             ))),
         }
     }
@@ -188,10 +200,10 @@ impl Plugin for EngineDemo {
         }) = info
         {
             server.print(&c_string(format!(
-                "Hello, player in slot {slot} (user ID {user_id})!"
+                "Hello, player in slot {slot} (user ID {user_id})!\n"
             )));
         } else {
-            server.print(&c_string(format!("Hello, player in slot {slot}!")));
+            server.print(&c_string(format!("Hello, player in slot {slot}!\n")));
         }
     }
 }

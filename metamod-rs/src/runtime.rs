@@ -1,6 +1,6 @@
 use metamod_sys::{Log, PluginInfo, raw::MetamodServerPrint};
 use std::{
-    ffi::{CStr, CString},
+    ffi::CStr,
     fmt,
     marker::PhantomData,
     num::{NonZeroI32, NonZeroU64},
@@ -175,27 +175,15 @@ impl<'callback> Context<'callback> {
 }
 
 impl Server<'_, '_> {
-    /// Print a line to the server console, adding a newline if needed.
-    /// The message is passed as native bytes.
+    /// Pass native bytes directly to the engine console. Include a newline
+    /// for line output. This does nothing when the engine callback is unavailable.
     pub fn print(&self, message: &CStr) {
-        if !crate::__ffi::engine_available() {
-            return;
-        }
-        if let Some(print) = self.context.print {
-            let line;
-            let message = if message.to_bytes().ends_with(b"\n") {
-                message
-            } else {
-                let mut bytes = message.to_bytes().to_vec();
-                bytes.push(b'\n');
-                line = CString::new(bytes).expect("CStr payload contains no NUL");
-                &line
-            };
+        if crate::__ffi::engine_available()
+            && let Some(print) = self.context.print
+        {
             // SAFETY: The engine callback is valid on the server thread,
             // and the C string lives through the synchronous call.
             unsafe { print(message.as_ptr()) };
-        } else {
-            self.context.print_console(message);
         }
     }
 }

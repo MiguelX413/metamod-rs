@@ -27,7 +27,7 @@ impl Plugin for MyPlugin {
     fn start_frame(&mut self, ctx: &mut Context<'_>) {
         if !self.greeted {
             self.greeted = true;
-            ctx.server().print(c"Hello from Rust!");
+            ctx.server().print(c"Hello from Rust!\n");
         }
     }
 }
@@ -80,7 +80,8 @@ server thread. It covers players whose joins the plugin observed.
 Use the lifecycle hooks to clear map-specific state and
 `ctx.server().print(&CStr)` for console messages within a callback. Use a
 `c"..."` literal or construct a `CString` for dynamic text. The SDK sends
-the original bytes and adds a newline if needed.
+the original bytes. Include a newline for line output. For Metamod's
+line-oriented console utility, use `ctx.print_console(message)`.
 
 ## Engine services
 
