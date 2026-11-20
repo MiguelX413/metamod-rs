@@ -5,9 +5,14 @@ typed game-DLL hooks, and scoped server access. Bindgen runs at build time.
 
 ## Write a Metamod plugin
 
-Set your library's crate type to `cdylib` and add `metamod-rs` as a dependency with
-the optional `macros` feature. The attribute fills in metadata and exports the
-Metamod entry points.
+Set your library's crate type to `cdylib` and add `metamod-rs` as a
+dependency. The default `macros` feature provides `#[metamod_plugin]`, which
+fills in metadata and exports the Metamod entry points.
+
+```toml
+[dependencies]
+metamod-rs = { git = "https://github.com/MiguelX413/metamod-rs" }
+```
 
 ```rust
 use metamod_rs::prelude::*;
@@ -43,7 +48,8 @@ Explicit attribute fields take precedence over the metadata table and Cargo
 package defaults. Without `cargo`, supply `name`, `version`,
 and `author`. Without `cargo` or an explicit `url`, the URL is empty.
 The `date` defaults to empty and `log_tag` defaults to the display name.
-With the macro feature disabled, declare `const METADATA: Metadata` in your `impl Plugin` using static
+Set `default-features = false` on the dependency to omit procedural macros.
+For manual registration, declare `const METADATA: Metadata` in your `impl Plugin` using static
 C strings, then call `export_plugin!(MyPlugin)` once in the library. Both forms
 use the same dispatch. To migrate a stateless plugin, implement `Default`
 and add `&mut self` and `&mut Context<'_>` to its callbacks. Existing

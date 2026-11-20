@@ -16,4 +16,5 @@ metamod-sys = { path = "../metamod-sys" }
 metamod-macros = { path = "../metamod-macros", optional = true }
 
 [features]
+default = ["macros"]
 macros = ["dep:metamod-macros"]
