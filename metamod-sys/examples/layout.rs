@@ -177,6 +177,16 @@ fn main() {
     println!("trace_size {}", size_of::<raw::TraceResult>());
     println!("edict_size {}", size_of::<raw::edict_t>());
     println!(
+        "spatial_maxEntities {}",
+        offset_of!(raw::globalvars_t, maxEntities)
+    );
+    println!("spatial_v {}", offset_of!(raw::edict_t, v));
+    println!("spatial_origin {}", offset_of!(raw::entvars_t, origin));
+    println!("spatial_angles {}", offset_of!(raw::entvars_t, angles));
+    println!("spatial_velocity {}", offset_of!(raw::entvars_t, velocity));
+    println!("spatial_absmin {}", offset_of!(raw::entvars_t, absmin));
+    println!("spatial_absmax {}", offset_of!(raw::entvars_t, absmax));
+    println!(
         "NewDllFunctions {} {}",
         size_of::<raw::NEW_DLL_FUNCTIONS>(),
         align_of::<raw::NEW_DLL_FUNCTIONS>()

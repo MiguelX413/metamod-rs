@@ -127,6 +127,22 @@ transition during a trace discards its output. Handles depend on the engine
 maintaining edict serials and Metamod forwarding map lifecycle hooks. A
 collision can have no usable handle, so inspect the fraction separately.
 
+### Entity discovery
+
+On an active map, use `ctx.entity_at(index)` for a single lookup or
+`ctx.entities()` for an index-ordered scan of the engine-visible edict
+table. The SDK captures `globalvars_t.maxEntities` at map activation.
+Scanning that capacity can discover allocations created later in the map. Vacant, out-of-range, and
+engine-filtered indices have no handle. A map change during traversal
+returns an error. Discovery requires the engine globals and edict lookup
+callback. A scan is a sequence of lookups, so individual handles can expire
+before you use them.
+
+`ctx.entity_spatial(handle)` revalidates the generation and copies origin,
+angles, velocity, and absolute world-space bounds. The result owns its
+data. Use `rust_entities` or `rust_entities 7` in the engine demo to list
+origins or look up a single index.
+
 ## Build and install hello-world
 
 ### Linux i686
@@ -204,8 +220,9 @@ engine-demo shows explicit attribute arguments.
   callback examples.
 - The loader supplies valid C arguments and calls `GiveFnptrsToDll`, query,
   attach, and hooks on the server thread. It keeps Metamod globals live during
-  hooks. The SDK copies the few function pointers it uses and accesses
-  foreign fields through raw pointers. Metadata and its strings have module
+  hooks and engine globals live until shutdown. The SDK copies the function
+  pointers it uses and reads the edict capacity at post-activation. It copies
+  native spatial fields after revalidating the handle. Metadata and its strings have module
   lifetime. Scoped contexts and server handles cannot cross threads or
   outlive their callbacks. An off-thread hook skips user code and leaves
   server-thread globals alone.
@@ -277,27 +294,25 @@ PowerShell 7.4 or newer and LLVM's `bin` directory on PATH:
 pwsh -NoProfile -File verify/windows-i686.ps1
 ```
 
-The platform scripts check both example binaries and their four named exports,
-compare
-C++ and Rust sizes, alignments, and field offsets, and load the actual plugin
-with `dlopen` or `LoadLibrary`. The shared loader exercises version negotiation,
-metadata stability, startup-only attach, both hook tables, engine printing,
-player-slot translation and revalidation, CVar registration and updates,
-command argument copying and reentry, deferred notification ordering, hook
-results, shutdown negotiation, and detach refusal. Rust tests cover identity
-invalidation, failed initialization, panicking cleanup and destructors,
-off-thread dispatch, and callback disabling after panic.
+The platform scripts compare C++ and Rust sizes, alignments, and field offsets.
+They check both example binaries for the four named exports and load each
+plugin with `dlopen` or `LoadLibrary`. The shared harness exercises metadata
+and lifecycle negotiation, hook results, player-slot translation and
+revalidation, CVar updates, command reentry, and deferred callback ordering.
+It also checks line and hull tracing, discovery across vacant slots,
+out-of-range lookup, spatial snapshots, and interruption by map changes.
+Rust tests cover identity invalidation, dispatch limits, off-thread dispatch,
+and panic containment during callbacks and cleanup.
 The Linux script accepts two optional paths for comparing against separate C++
 reference checkouts. Binding generation always uses the submodules.
 
 Validated against alliedmodders/metamod-hl1 at
 `18a10db686702e8ae9e0fcb5b5febf8881dc9c2d` and alliedmodders/hlsdk at
-`a0edb7792a96998d349325bebab8ea41ec5cb239`. Before the bindgen migration,
-a Ricochet startup on Metamod-P 1.21p109 confirmed both console messages,
-including a single `StartFrame` message, and `meta list` showed the plugin in
-`RUN`. The current stateful plugin has been exercised in the loader harness.
-A new server smoke test, player gameplay, and a later map transition remain
-unverified.
+`a0edb7792a96998d349325bebab8ea41ec5cb239`.
+An earlier Ricochet smoke test on Metamod-P 1.21p109 confirmed startup,
+the first frame, and a player greeting. The current examples passed the
+Linux i686 ABI and loader harness. Win32 and live-server tracing and
+entity discovery remain unverified.
 
 Before publishing the SDK, run the example on isolated servers with both
 Metamod loaders, including a native Win32 server, and establish the supported

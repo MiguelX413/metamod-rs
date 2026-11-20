@@ -11,7 +11,8 @@ static plugin_info_t *info;
 static meta_globals_t globals{};
 static DLL_FUNCTIONS hooks{};
 static DLL_FUNCTIONS post_hooks{};
-static edict_t player{};
+static edict_t player{}, world{}, vacant{};
+static bool discovery_transition;
 static int logged;
 static bool engine_demo;
 
@@ -19,6 +20,7 @@ static cvar_t *registered_cvar;
 static char cvar_value[1024];
 static void (*command)();
 static void (*trace_command)();
+static void (*entities_command)();
 static bool trace_transition;
 static const char *args[] = {"RUST_HELLO", nullptr};
 static bool reenter_argv;
@@ -51,6 +53,9 @@ static void register_command(const char *name, void (*callback)()) {
     if (std::strcmp(name, "rust_trace") == 0) {
         assert(!trace_command);
         trace_command = callback;
+    } else if (std::strcmp(name, "rust_entities") == 0) {
+        assert(!entities_command);
+        entities_command = callback;
     } else {
         assert(!command && std::strcmp(name, "rust_hello") == 0);
         command = callback;
@@ -71,8 +76,13 @@ static const char *command_argv(int index) {
 }
 
 static edict_t *entity_of_index(int index) {
-    assert(index == 7);
-    return &player;
+    assert(index >= 0 && index < 8);
+    if (index == 3 && discovery_transition) {
+        hooks.pfnServerDeactivate();
+    }
+    if (index == 0) return &world;
+    if (index == 5) return &vacant;
+    return index == 7 ? &player : nullptr;
 }
 
 static int player_userid(edict_t *edict) {
@@ -125,11 +135,16 @@ static void server_print(const char *message) {
         "Hello, player in slot 7 (user ID 42)!\n",
         "Deferred command argument\n",
         "New value\n",
+        "Visible entities: 2\n",
+        "Entity 0 origin: [0.0, 0.0, 0.0]\n",
+        "Entity 7 origin: [1.0, 2.0, 3.0]\n",
+        "Visible entities: 0\n",
+        "Entity discovery failed: the map changed during entity discovery\n",
         "Line fraction: 0.5, hit: Some(7)\n",
         "Hull fraction: 1\n",
         "Line trace failed: the map changed during the trace\n",
     };
-    assert(logged < (engine_demo ? 10 : 3));
+    assert(logged < (engine_demo ? 15 : 3));
     assert(std::strcmp(message, engine_demo ? engine_output[logged] : hello_output[logged]) == 0);
     std::fputs(message, stdout);
     if (++logged == 2) {
@@ -191,7 +206,13 @@ int main(int argc, char **argv) {
     engine.pfnPEntityOfEntIndex = entity_of_index;
     engine.pfnGetPlayerUserId = player_userid;
     engine.pfnGetPlayerAuthId = player_authid;
-    give(&engine, nullptr);
+    globalvars_t engine_globals{};
+    engine_globals.maxEntities = 8;
+    player.v.origin.x = 1;
+    player.v.origin.y = 2;
+    player.v.origin.z = 3;
+    vacant.free = 1;
+    give(&engine, &engine_globals);
 
     META_FUNCTIONS functions{};
     gamedll_funcs_t game{};
@@ -276,17 +297,28 @@ int main(int argc, char **argv) {
         command();
         args[1] = nullptr;
         assert(logged == 7 && std::strcmp(cvar_value, "New value") == 0);
+        assert(entities_command);
+        args[0] = "rust_entities";
+        entities_command();
+        args[1] = "8";
+        entities_command();
+        args[1] = nullptr;
+        discovery_transition = true;
+        entities_command();
+        discovery_transition = false;
+        post_hooks.pfnServerActivate(nullptr, 0, 0);
+        assert(logged == 12);
         assert(trace_command);
         args[0] = "rust_trace";
         trace_command();
-        assert(logged == 9);
+        assert(logged == 14);
         trace_transition = true;
         trace_command();
-        assert(logged == 10);
+        assert(logged == 15);
     } else {
         assert(logged == 3 && !command && !registered_cvar);
     }
-    const int expected_logs = engine_demo ? 10 : 3;
+    const int expected_logs = engine_demo ? 15 : 3;
     globals.mres = MRES_UNSET;
     hooks.pfnClientDisconnect(&player);
     assert(globals.mres == MRES_IGNORED);

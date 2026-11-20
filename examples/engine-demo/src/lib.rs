@@ -56,12 +56,43 @@ impl Plugin for EngineDemo {
             if let Err(error) = server.register_command("rust_trace") {
                 server.print(&format!("Could not register rust_trace: {error}"));
             }
+            if let Err(error) = server.register_command("rust_entities") {
+                server.print(&format!("Could not register rust_entities: {error}"));
+            }
             server.print("Rust Engine Demo first frame");
         }
     }
 
     fn server_command(&mut self, ctx: &mut Context<'_>, command: &Command) {
         let server = ctx.server();
+        if command.name() == c"rust_entities" {
+            let entities = if let Some(argument) = command.arg(0) {
+                let Ok(index) = argument.to_string_lossy().parse::<i32>() else {
+                    server.print("rust_entities expects an integer edict index");
+                    return;
+                };
+                ctx.entity_at(index)
+                    .map(|entity| entity.into_iter().collect())
+            } else {
+                ctx.entities()
+            };
+            match entities {
+                Ok(entities) => {
+                    server.print(&format!("Visible entities: {}", entities.len()));
+                    for entity in entities {
+                        if let Some(spatial) = ctx.entity_spatial(entity) {
+                            server.print(&format!(
+                                "Entity {} origin: {:?}",
+                                entity.index(),
+                                spatial.origin
+                            ));
+                        }
+                    }
+                }
+                Err(error) => server.print(&format!("Entity discovery failed: {error}")),
+            }
+            return;
+        }
         if command.name() == c"rust_trace" {
             let start = [0.0, 0.0, 64.0];
             let end = [0.0, 0.0, -64.0];

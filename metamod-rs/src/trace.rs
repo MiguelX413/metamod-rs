@@ -1,13 +1,25 @@
 use crate::{__ffi, Context, Server, engine::Engine};
-use metamod_sys::raw::{self, edict_t};
+use metamod_sys::{
+    EngineGlobals,
+    raw::{self, edict_t},
+};
 use std::{cell::Cell, fmt, ptr};
 
 thread_local! {
     // Keep the counter across deactivation so a new map cannot revive handles.
+    static GLOBALS: Cell<*mut EngineGlobals> = const { Cell::new(ptr::null_mut()) };
+    static LIMIT: Cell<i32> = const { Cell::new(0) };
     static MAP: Cell<(u64, bool)> = const { Cell::new((0, false)) };
 }
 
+/// # Safety
+/// Non-null globals must remain readable on the server thread through shutdown.
+pub(crate) unsafe fn set_globals(globals: *mut EngineGlobals) {
+    GLOBALS.set(globals);
+}
+
 pub(crate) fn invalidate_map() {
+    LIMIT.set(0);
     let (generation, _) = MAP.get();
     MAP.set((generation, false));
 }
@@ -16,6 +28,12 @@ pub(crate) fn activate_map() {
     let (generation, _) = MAP.get();
     if let Some(generation) = generation.checked_add(1) {
         MAP.set((generation, true));
+        let globals = GLOBALS.get();
+        if !globals.is_null() {
+            // SAFETY: The loader retains initialized globals and this is the
+            // owner-thread post-activation hook for the current map.
+            LIMIT.set(unsafe { ptr::addr_of!((*globals).maxEntities).read() });
+        }
     } else {
         invalidate_map();
     }
@@ -72,6 +90,118 @@ impl Context<'_> {
             .and_then(|engine| entity.resolve(engine))
             .is_some()
     }
+}
+
+/// Owned spatial fields as reported by the engine at lookup time.
+/// The snapshot remains readable after its entity handle expires.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EntitySpatial {
+    pub entity: EntityHandle,
+    pub origin: [f32; 3],
+    pub angles: [f32; 3],
+    pub velocity: [f32; 3],
+    pub bounds_min: [f32; 3],
+    pub bounds_max: [f32; 3],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EntityError {
+    Unavailable,
+    MapChanged,
+}
+
+impl fmt::Display for EntityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Unavailable => "entity discovery requires an active map and edict table",
+            Self::MapChanged => "the map changed during entity discovery",
+        })
+    }
+}
+
+impl std::error::Error for EntityError {}
+
+fn vector(v: raw::Vector) -> [f32; 3] {
+    [v.x, v.y, v.z]
+}
+
+fn find_entity(
+    lookup: impl FnOnce(i32) -> *mut edict_t,
+    index: i32,
+    map: u64,
+) -> Result<Option<EntityHandle>, EntityError> {
+    if active_map() != Some(map) {
+        return Err(EntityError::MapChanged);
+    }
+    let edict = lookup(index);
+    if active_map() != Some(map) {
+        return Err(EntityError::MapChanged);
+    }
+    // SAFETY: The lookup supplied a current-map edict or null and no
+    // other native call intervened.
+    Ok(unsafe { live_serial(edict) }.map(|serial| EntityHandle { index, serial, map }))
+}
+
+impl Context<'_> {
+    /// Discover a live engine-visible edict by index, including world index zero.
+    /// Out-of-range and vacant indices return `Ok(None)`.
+    pub fn entity_at(&self, index: i32) -> Result<Option<EntityHandle>, EntityError> {
+        let (map, limit, lookup) = discovery()?;
+        if !(0..limit).contains(&index) {
+            return Ok(None);
+        }
+        // SAFETY: The index lies within the active engine edict table.
+        find_entity(|index| unsafe { lookup(index) }, index, map)
+    }
+
+    /// Scan the engine-visible edict table in index order. Each handle
+    /// describes the allocation seen at its lookup and can expire later.
+    /// A map transition interrupts the scan with `EntityError::MapChanged`.
+    pub fn entities(&self) -> Result<Vec<EntityHandle>, EntityError> {
+        let (map, limit, lookup) = discovery()?;
+        let mut found = Vec::new();
+        for index in 0..limit {
+            // SAFETY: The index lies within the active engine edict table.
+            if let Some(entity) = find_entity(|index| unsafe { lookup(index) }, index, map)? {
+                found.push(entity);
+            }
+        }
+        Ok(found)
+    }
+
+    /// Copy current spatial fields after validating the allocation generation.
+    /// Bounds are the engine's world-space absolute bounds. A stale or
+    /// unresolved handle returns `None`.
+    pub fn entity_spatial(&self, entity: EntityHandle) -> Option<EntitySpatial> {
+        let edict = entity.resolve(__ffi::engine()?)?;
+        // SAFETY: The handle resolved to a live edict. Copy initialized
+        // vector fields without creating references or calling the engine.
+        unsafe {
+            let vars = ptr::addr_of!((*edict).v);
+            Some(EntitySpatial {
+                entity,
+                origin: vector(ptr::addr_of!((*vars).origin).read()),
+                angles: vector(ptr::addr_of!((*vars).angles).read()),
+                velocity: vector(ptr::addr_of!((*vars).velocity).read()),
+                bounds_min: vector(ptr::addr_of!((*vars).absmin).read()),
+                bounds_max: vector(ptr::addr_of!((*vars).absmax).read()),
+            })
+        }
+    }
+}
+
+type EdictLookup = unsafe extern "C" fn(i32) -> *mut edict_t;
+
+fn discovery() -> Result<(u64, i32, EdictLookup), EntityError> {
+    let map = active_map().ok_or(EntityError::Unavailable)?;
+    let limit = LIMIT.get();
+    let lookup = __ffi::engine()
+        .and_then(|engine| engine.entity)
+        .ok_or(EntityError::Unavailable)?;
+    if limit <= 0 {
+        return Err(EntityError::Unavailable);
+    }
+    Ok((map, limit, lookup))
 }
 
 /// Whether the engine includes monsters in collision checks.
@@ -212,7 +342,6 @@ fn trace(
     if active_map() != Some(map) {
         return Err(TraceError::MapChanged);
     }
-    let vector = |v: raw::Vector| [v.x, v.y, v.z];
     Ok(TraceResult {
         all_solid: output.fAllSolid != 0,
         start_solid: output.fStartSolid != 0,

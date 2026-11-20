@@ -1,4 +1,4 @@
-//! Startup-only GoldSrc Metamod plugins with stateful, observational hooks.
+//! Startup-only stateful GoldSrc Metamod plugins with typed hooks.
 
 use std::ffi::CStr;
 
@@ -12,7 +12,8 @@ mod trace;
 pub use engine::{Command, EngineError, PlayerInfo};
 pub use hooks::{HookResult, PostHookResult};
 pub use trace::{
-    EntityHandle, Hull, TraceError, TraceMonsters, TraceOptions, TracePlane, TraceResult,
+    EntityError, EntityHandle, EntitySpatial, Hull, TraceError, TraceMonsters, TraceOptions,
+    TracePlane, TraceResult,
 };
 
 pub use runtime::{Context, InvalidPlayerSlot, PlayerId, PlayerSlot, Server};
@@ -24,9 +25,9 @@ pub mod prelude {
     #[cfg(feature = "macros")]
     pub use crate::metamod_plugin;
     pub use crate::{
-        Command, Context, EngineError, EntityHandle, HookResult, Hull, Metadata, PlayerId,
-        PlayerInfo, PlayerSlot, Plugin, PostHookResult, Server, TraceError, TraceMonsters,
-        TraceOptions, TracePlane, TraceResult, export_plugin,
+        Command, Context, EngineError, EntityError, EntityHandle, EntitySpatial, HookResult, Hull,
+        Metadata, PlayerId, PlayerInfo, PlayerSlot, Plugin, PostHookResult, Server, TraceError,
+        TraceMonsters, TraceOptions, TracePlane, TraceResult, export_plugin,
     };
 }
 
@@ -120,20 +121,20 @@ macro_rules! export_plugin {
         #[unsafe(no_mangle)]
         unsafe extern "stdcall" fn GiveFnptrsToDll(
             engine: *mut __metamod_ffi::EngineFunctions,
-            _: *mut __metamod_ffi::EngineGlobals,
+            globals: *mut __metamod_ffi::EngineGlobals,
         ) {
-            // SAFETY: The loader supplies the GoldSrc engine function table.
-            unsafe { __metamod_ffi::give_engine(engine) };
+            // SAFETY: The loader supplies the engine function table and globals.
+            unsafe { __metamod_ffi::give_engine(engine, globals) };
         }
 
         #[cfg(not(all(windows, target_arch = "x86")))]
         #[unsafe(no_mangle)]
         unsafe extern "C" fn GiveFnptrsToDll(
             engine: *mut __metamod_ffi::EngineFunctions,
-            _: *mut __metamod_ffi::EngineGlobals,
+            globals: *mut __metamod_ffi::EngineGlobals,
         ) {
-            // SAFETY: The loader supplies the GoldSrc engine function table.
-            unsafe { __metamod_ffi::give_engine(engine) };
+            // SAFETY: The loader supplies the engine function table and globals.
+            unsafe { __metamod_ffi::give_engine(engine, globals) };
         }
 
         #[unsafe(no_mangle)]

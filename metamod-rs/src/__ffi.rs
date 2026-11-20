@@ -126,7 +126,8 @@ pub(crate) fn player_at(slot: PlayerSlot) -> Option<PlayerId> {
 /// # Safety
 /// A non-null table must have readable engine callback slots. They must
 /// remain callable on this thread through the lifetime of the attachment.
-pub unsafe fn give_engine(table: *mut EngineFunctions) {
+/// Non-null globals must remain readable on the owner thread until shutdown.
+pub unsafe fn give_engine(table: *mut EngineFunctions, globals: *mut EngineGlobals) {
     let _ = contained(|| {
         if wrong_thread()
             || table.is_null()
@@ -138,6 +139,8 @@ pub unsafe fn give_engine(table: *mut EngineFunctions) {
         // without borrowing the table, which may be shared by the loader.
         let engine = unsafe { Engine::read(table) };
         ENGINE.set(engine);
+        // SAFETY: The loader supplies the lifetime of the globals.
+        unsafe { crate::trace::set_globals(globals) };
     });
 }
 

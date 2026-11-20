@@ -74,6 +74,13 @@ int main() {
     std::printf("serialnumber %zu\n", offsetof(edict_t, serialnumber));
     std::printf("trace_size %zu\n", sizeof(TraceResult));
     std::printf("edict_size %zu\n", sizeof(edict_t));
+    std::printf("spatial_maxEntities %zu\n", offsetof(globalvars_t, maxEntities));
+    std::printf("spatial_v %zu\n", offsetof(edict_t, v));
+    std::printf("spatial_origin %zu\n", offsetof(entvars_t, origin));
+    std::printf("spatial_angles %zu\n", offsetof(entvars_t, angles));
+    std::printf("spatial_velocity %zu\n", offsetof(entvars_t, velocity));
+    std::printf("spatial_absmin %zu\n", offsetof(entvars_t, absmin));
+    std::printf("spatial_absmax %zu\n", offsetof(entvars_t, absmax));
     std::printf("NewDllFunctions %zu %zu\n", sizeof(NEW_DLL_FUNCTIONS), alignof(NEW_DLL_FUNCTIONS));
     std::printf("pfnGameShutdown %zu\n", offsetof(NEW_DLL_FUNCTIONS, pfnGameShutdown));
     std::printf("new_dll_version %d\n", NEW_DLL_FUNCTIONS_VERSION);

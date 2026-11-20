@@ -13,14 +13,14 @@ pointees have exposed fields or that the functions are safe to call.
 | GameDLL lifecycle and player callbacks, `engine/eiface.h` `DLL_FUNCTIONS`, `metamod/dllapi.h` | Complete callback table | Frame, map activate/deactivate, player put-in-server/disconnect, and lag-compensation pre/post | Loader probes cover current registrations and original lag-compensation return. Client admission, user-info editing, save/restore, movement, entity dispatch, and networking hooks remain raw; pointer/out-buffer validity and synchronous results need individual treatment. |
 | NewDLL, `engine/eiface.h` `NEW_DLL_FUNCTIONS` | Complete callback table | Optional game shutdown | Layout and loader probes. Entity-private-data release, collision filtering, and CVar replies remain raw. Their lifetimes and query correlation need separate contracts. |
 | Engine console, commands and CVars, `engine/eiface.h` `enginefuncs_t`, `common/cvardef.h` | Engine slots and CVar layout generated | Printing, registration, owned command tokens, CVar reads/writes | Native harness exercises reentrant commands and CVar storage. Server command execution and arbitrary engine callback hooks remain raw. |
-| Engine players and entities, `engine/eiface.h`, `engine/edict.h`, `engine/progdefs.h` | Callback slots and edict layout; entvars remain opaque | Session-aware player lookup, owned user/auth IDs, and trace-hit handles | Native harness exercises session revalidation. Trace-hit handles check the map epoch, edict serial, and free flag. Entity creation/removal, keyvalues, and spatial access remain raw. |
+| Engine players and entities, `engine/eiface.h`, `engine/edict.h`, `engine/progdefs.h` | Callback slots and edict, entvars, and engine globals layouts | Session-aware player lookup, owned user/auth IDs, index lookup, bounded edict discovery, and owned spatial snapshots | Native harness exercises session revalidation. All entity handles check the map epoch, edict serial, and free flag. Discovery uses map capacity captured from engine globals. The x86 probes cover vacant and out-of-range slots, spatial reads, and map transitions. Entity creation/removal and keyvalues remain raw. |
 | Engine tracing, physics and movement, `engine/eiface.h`, `pm_shared/pm_defs.h` | Engine slots and trace payload layout; movement payloads remain opaque | Owned line and standard hull traces, collision mode and generation-checked skip entity | x86 layout/loader probes cover line hit, hull miss, skip entity, and a map transition during a trace. Movement and physics state still require callback-scoped mutation and reentry analysis. |
 | Engine fake clients, messages, events, sound and resources, `engine/eiface.h` | Engine slots | Pending | Fake client creation needs a partial-failure and disconnect policy. Message construction needs a complete, validated send operation around the native begin/write/end sequence. Resource registration is phase-dependent. |
 | Other SDK data and auxiliary interfaces, `common/`, `engine/`, `pm_shared/`, `dlls/` | Selected transitively referenced types; no blanket header coverage | Pending | Add audited public ABI types by header family. Keep game implementation types and templates outside the ABI surface. |
 
-The layout probes and native loader scripts run on Linux i686 and are configured
-for Win32 CI. They model the host contract. Live engine tests and cross-fork
-behavior require separate verification.
+The Linux i686 layout probes and loader harness passed for both examples.
+Win32 CI is configured to run the same cases. The harness simulates the host,
+so live-server verification and cross-fork behavior are tracked separately.
 
 ## Extension rules
 
@@ -41,7 +41,8 @@ behavior require separate verification.
 
 ## Next milestones
 
-1. Add entity discovery and owned spatial snapshots using the trace handle validation rules.
+1. Extend entity access with owned classification and keyvalue snapshots,
+   with explicit rules for string-table lifetimes.
 2. Add a synchronous client admission hook with bounded rejection output and
    expand result verification against a real Metamod host on both x86 targets.
 3. Add validated message construction and fake-client lifecycle management,
