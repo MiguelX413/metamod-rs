@@ -1,0 +1,12 @@
+[package]
+name = "metamod-sys"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Raw FFI bindings for the GoldSrc Metamod plugin ABI"
+readme.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["goldsrc", "metamod", "half-life", "ffi"]
+categories = ["external-ffi-bindings", "game-development"]
+publish = false

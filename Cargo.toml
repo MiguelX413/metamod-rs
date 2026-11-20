@@ -1,6 +1,11 @@
-[package]
-name = "metamod-rs"
+[workspace]
+members = ["metamod-sys", "metamod", "examples/hello-world"]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-
-[dependencies]
+authors = ["MiguelX413 <lbpgaming27@gmail.com>"]
+readme = "README.md"
+license = "AGPL-3.0-only"
+repository = "https://github.com/MiguelX413/metamod-rs"

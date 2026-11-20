@@ -3,5 +3,19 @@
 version = 4
 
 [[package]]
-name = "metamod-rs"
+name = "hello-world"
+version = "0.1.0"
+dependencies = [
+ "metamod",
+]
+
+[[package]]
+name = "metamod"
+version = "0.1.0"
+dependencies = [
+ "metamod-sys",
+]
+
+[[package]]
+name = "metamod-sys"
 version = "0.1.0"

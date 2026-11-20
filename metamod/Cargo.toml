@@ -1,0 +1,15 @@
+[package]
+name = "metamod"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Rust SDK for developing native GoldSrc Metamod plugins"
+readme.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["goldsrc", "metamod", "half-life", "plugin"]
+categories = ["api-bindings", "game-development"]
+publish = false
+
+[dependencies]
+metamod-sys = { path = "../metamod-sys" }
