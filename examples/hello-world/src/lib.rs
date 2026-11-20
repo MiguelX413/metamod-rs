@@ -22,7 +22,7 @@ impl Plugin for HelloWorld {
     fn player_join(&mut self, ctx: &mut Context<'_>, player: PlayerId) {
         if ctx.is_player_current(player) {
             ctx.server()
-                .print(&format!("Hello, player in slot {}!", player.slot().get()));
+                .print(&format!("Hello, player in slot {}!", player.slot()));
         }
     }
 }
