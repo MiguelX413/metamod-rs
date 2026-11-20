@@ -51,6 +51,8 @@ messages within a callback.
 
 ## Build and install hello-world
 
+### Linux i686
+
 Initialize the pinned Metamod and HLSDK submodules before building. Use Rust
 stable 1.88 or newer, Clang and host libclang, and C/C++ development
 headers for the target. For Linux i686, also install 32-bit linker and libc
@@ -64,13 +66,35 @@ rustup target add i686-unknown-linux-gnu
 cargo build --locked --release --target i686-unknown-linux-gnu -p hello-world
 ```
 
-In an **isolated server** where Metamod is already installed, copy
+### Windows x86
+
+Install the Visual Studio C++ build tools and Windows SDK, plus LLVM with
+host libclang. Use an **x86 Native Tools Command Prompt**. Set
+`LIBCLANG_PATH` to the LLVM `bin` directory if bindgen cannot locate libclang.
+
+```bat
+git submodule update --init
+rustup target add i686-pc-windows-msvc
+cargo build --locked --release --target i686-pc-windows-msvc -p hello-world
+```
+
+### Install the plugin
+
+In an **isolated Linux server** where Metamod is already installed, copy
 `target/i686-unknown-linux-gnu/release/libhello_world.so` to
 `<game>/addons/rust-hello/libhello_world.so`. Add this line to the server's
 `<game>/addons/metamod/plugins.ini`:
 
 ```text
 linux addons/rust-hello/libhello_world.so
+```
+
+For a **Windows server**, copy
+`target/i686-pc-windows-msvc/release/hello_world.dll` to
+`<game>/addons/rust-hello/hello_world.dll` and add this line instead:
+
+```text
+win32 addons/rust-hello/hello_world.dll
 ```
 
 Start the server with a valid map. Run `meta list` in the server console and
@@ -114,10 +138,9 @@ line and shared library.
   Release map-specific resources during `server_deactivate`. Metamod can
   bypass detach refusal on forced unload, which the SDK does not support.
 
-Linux i686 is the verified deployment target. On Win32 the export macro uses
-stdcall for `GiveFnptrsToDll` and cdecl for the Metamod entry points. Bindgen
-needs Windows SDK and C++ headers for a Windows target. Windows binding
-generation, PE export names and ordinals, and loading remain unverified.
+On Win32 the export macro uses stdcall for `GiveFnptrsToDll` and cdecl
+for the Metamod entry points. Metamod resolves these exports by name.
+The SDK leaves PE ordinals to the linker.
 
 ## Verify
 
@@ -130,14 +153,21 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The verification script checks ELF32/i386 and the four exported functions,
-compares C++ and Rust sizes, alignments, and field offsets, and opens the
-actual shared library with `dlopen`. It exercises version negotiation,
+On Windows, run the following from the x86 Native Tools Command Prompt with
+PowerShell 7.4 or newer and LLVM's `bin` directory on PATH:
+
+```bat
+pwsh -NoProfile -File verify/windows-i686.ps1
+```
+
+The platform scripts check the x86 binary and its four named exports, compare
+C++ and Rust sizes, alignments, and field offsets, and load the actual plugin
+with `dlopen` or `LoadLibrary`. The shared loader exercises version negotiation,
 metadata stability, startup-only attach, both hook tables, engine printing,
 player-slot translation, cross-hook reentry, hook results, and detach refusal.
 Rust tests cover failed initialization, panicking destructors, off-thread
 dispatch, and callback disabling after panic.
-The script accepts two optional paths for comparing against separate C++
+The Linux script accepts two optional paths for comparing against separate C++
 reference checkouts. Binding generation always uses the submodules.
 
 Validated against alliedmodders/metamod-hl1 at
@@ -150,7 +180,7 @@ A new server smoke test, player gameplay, and a later map transition remain
 unverified.
 
 Before publishing the SDK, run the example on isolated servers with both
-Metamod loaders, verify Win32 exports and loading, and establish the supported
+Metamod loaders, including a native Win32 server, and establish the supported
 Linux libc baseline. Add further typed hooks and scoped capabilities as
 their ABI and lifetime contracts are verified.
 

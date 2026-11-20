@@ -1,10 +1,11 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
-#include <dlfcn.h>
 #include <extdll.h>
 #include <meta_api.h>
 #include <h_export.h>
+
+static_assert(sizeof(void *) == 4, "build the loader for x86");
 
 static plugin_info_t *info;
 static meta_globals_t globals{};
@@ -37,17 +38,21 @@ static void server_print(const char *message) {
 }
 
 template <typename Fn>
-static Fn symbol(void *module, const char *name) {
-    auto function = reinterpret_cast<Fn>(dlsym(module, name));
+static Fn symbol(DLHANDLE module, const char *name) {
+    auto function = reinterpret_cast<Fn>(DLSYM(module, name));
     assert(function);
     return function;
 }
 
 int main(int argc, char **argv) {
     assert(argc == 2);
-    void *module = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+    DLHANDLE module = DLOPEN(argv[1]);
     if (!module) {
+#ifdef _WIN32
+        std::fprintf(stderr, "LoadLibrary failed with error %lu\n", GetLastError());
+#else
         std::fprintf(stderr, "%s\n", dlerror());
+#endif
         return 1;
     }
     auto give = symbol<GIVE_ENGINE_FUNCTIONS_FN>(module, "GiveFnptrsToDll");

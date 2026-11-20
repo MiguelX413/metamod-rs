@@ -11,9 +11,15 @@ fn main() {
 
     let target = env::var("TARGET").unwrap();
     let os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    // MSVC's supported C++ standard switches start at C++14.
+    let standard = if os == "windows" {
+        "-std=c++17"
+    } else {
+        "-std=c++11"
+    };
     let mut builder = bindgen::Builder::default()
         .header("wrapper.hpp")
-        .clang_args(["-x", "c++", "-std=c++11", &format!("--target={target}")])
+        .clang_args(["-x", "c++", standard, &format!("--target={target}")])
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .allowlist_type("META_(FUNCTIONS|RES|QUERY_FN|ATTACH_FN|DETACH_FN)")
         .allowlist_type("plugin_info_t|meta_globals_t|gamedll_funcs_t|mutil_funcs_t")
