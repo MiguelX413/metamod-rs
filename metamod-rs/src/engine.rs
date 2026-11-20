@@ -50,9 +50,15 @@ engine_callbacks! {
     string_from_index: MetamodSzFromIndex = pfnSzFromIndex,
 }
 
+// Native registration is irreversible on the portable ABI. Bound the number
+// of reservations as well as the storage per reservation.
+const MAX_CONSOLE_REGISTRATIONS: usize = 256;
+pub(crate) const MAX_ENGINE_STRING: usize = 4096;
+
 pub(crate) type CommandCallback = unsafe extern "C" fn();
 
 thread_local! {
+    static CVARS: RefCell<HashSet<&'static CStr>> = RefCell::new(HashSet::new());
     static COMMANDS: RefCell<HashSet<&'static CStr>> = RefCell::new(HashSet::new());
     static READING_COMMAND: Cell<Option<bool>> = const { Cell::new(None) };
 }
@@ -98,6 +104,7 @@ pub enum EngineError {
     AlreadyRegistered,
     UnknownCvar,
     RegistrationRejected,
+    RegistrationLimit,
 }
 
 impl fmt::Display for EngineError {
@@ -112,6 +119,7 @@ impl fmt::Display for EngineError {
             Self::AlreadyRegistered => "the console name is already registered",
             Self::UnknownCvar => "unknown CVar",
             Self::RegistrationRejected => "the engine did not register the CVar",
+            Self::RegistrationLimit => "the plugin console registration limit was reached",
         })
     }
 }
@@ -164,6 +172,35 @@ fn registration_available() -> Result<(), EngineError> {
     }
 }
 
+fn reserve_name(name: CString, cvar: bool) -> Result<&'static CStr, EngineError> {
+    CVARS.with(|cvars| {
+        COMMANDS.with(|commands| {
+            let mut cvars = cvars.borrow_mut();
+            let mut commands = commands.borrow_mut();
+            if commands.contains(name.as_c_str()) {
+                return Err(EngineError::AlreadyRegistered);
+            }
+            if cvars.contains(name.as_c_str()) {
+                return Err(if cvar {
+                    EngineError::RegistrationRejected
+                } else {
+                    EngineError::AlreadyRegistered
+                });
+            }
+            if cvars.len() + commands.len() >= MAX_CONSOLE_REGISTRATIONS {
+                return Err(EngineError::RegistrationLimit);
+            }
+            let name: &'static CStr = Box::leak(name.into_boxed_c_str());
+            if cvar {
+                cvars.insert(name);
+            } else {
+                commands.insert(name);
+            }
+            Ok(name)
+        })
+    })
+}
+
 impl Server<'_, '_> {
     /// Register a server CVar from an attached callback. Use a plugin-specific name.
     pub fn register_cvar(&self, input: &str, default: &str) -> Result<(), EngineError> {
@@ -181,7 +218,9 @@ impl Server<'_, '_> {
         // GoldSrc may retain the structure and name, and may replace the
         // string field with storage allocated by the engine. Never reclaim
         // these allocations or read the structure back as Rust-owned data.
-        let name: &'static CStr = Box::leak(name.into_boxed_c_str());
+        // Reserve before crossing FFI. Even a failed or interrupted
+        // attempt may have handed the name and CVar storage to the host.
+        let name = reserve_name(name, true)?;
         let initial = Box::leak(default.into_boxed_c_str());
         let cvar = Box::into_raw(Box::new(cvar_t {
             name: name.as_ptr(),
@@ -209,7 +248,7 @@ impl Server<'_, '_> {
         // SAFETY: Copy the synchronous engine result before making another native call.
         let result = unsafe { get(name.as_ptr()) };
         available()?;
-        Ok(unsafe { copy_string(result) })
+        Ok(unsafe { copy_string(result, MAX_ENGINE_STRING) })
     }
 
     /// Set an existing CVar through the engine, which copies the supplied value.
@@ -242,17 +281,7 @@ impl Server<'_, '_> {
             return Err(EngineError::AlreadyRegistered);
         }
         registration_available()?;
-        let registered = COMMANDS
-            .with(|commands| {
-                let mut commands = commands.borrow_mut();
-                if commands.contains(name.as_c_str()) {
-                    return None;
-                }
-                let name: &'static CStr = Box::leak(name.into_boxed_c_str());
-                commands.insert(name);
-                Some(name)
-            })
-            .ok_or(EngineError::AlreadyRegistered)?;
+        let registered = reserve_name(name, false)?;
         // SAFETY: The name and callback stay resident. No registry borrow
         // crosses the native call, which may invoke a command immediately.
         unsafe { register(registered.as_ptr(), Some(callback)) };
@@ -260,16 +289,36 @@ impl Server<'_, '_> {
     }
 }
 
-/// A non-null pointer must refer to a live NUL-terminated engine string.
-pub(crate) unsafe fn copy_string(value: *const c_char) -> Option<CString> {
+/// # Safety
+/// A non-null pointer must identify a stable initialized byte range in one
+/// allocation through its first NUL or `limit` bytes, whichever comes first.
+/// This cannot check whether foreign memory is mapped or still live.
+pub(crate) unsafe fn copy_string(value: *const c_char, limit: usize) -> Option<CString> {
     if value.is_null() {
         return None;
     }
-    // SAFETY: The caller ensures validity until the immediate copy finishes.
-    Some(unsafe { CStr::from_ptr(value) }.to_owned())
+    for offset in 0..limit {
+        // SAFETY: The caller guarantees readability up to the terminator
+        // or the limit. No subsequent byte is touched once a NUL is seen.
+        if unsafe { value.add(offset).read() } == 0 {
+            // SAFETY: The scan established this range and terminal NUL.
+            let bytes = unsafe { std::slice::from_raw_parts(value.cast::<u8>(), offset + 1) };
+            return CStr::from_bytes_with_nul(bytes).ok().map(CStr::to_owned);
+        }
+    }
+    None
 }
 
-pub(crate) fn read_command() -> Option<Command> {
+pub(crate) fn invalidate_command_read() {
+    if READING_COMMAND.get().is_some() {
+        READING_COMMAND.set(Some(true));
+    }
+}
+
+/// # Safety
+/// Called synchronously by the engine with a live command argument context
+/// and on the attached server thread.
+pub(crate) unsafe fn read_command() -> Option<Command> {
     if READING_COMMAND.get().is_some() {
         // GoldSrc holds arguments in a shared command buffer. A nested
         // invocation during acquisition makes the outer snapshot unreliable.
@@ -305,9 +354,9 @@ pub(crate) fn read_command() -> Option<Command> {
             return None;
         }
         // SAFETY: The engine's token remains live until the next native call.
-        let value = unsafe { CStr::from_ptr(value) };
-        remaining = remaining.checked_sub(value.to_bytes_with_nul().len())?;
-        Some(value.to_owned())
+        let value = unsafe { copy_string(value, remaining) }?;
+        remaining -= value.as_bytes_with_nul().len();
+        Some(value)
     };
     let invoked = argument(0)?;
     let key = CString::new(invoked.to_bytes().to_ascii_lowercase()).ok()?;
@@ -321,14 +370,17 @@ impl Context<'_> {
     /// owns its strings, and no engine entity pointer escapes the lookup.
     pub fn player_info(&self, id: PlayerId) -> Option<PlayerInfo> {
         let engine = __ffi::engine()?;
-        let entity = engine.entity?;
+        if !self.is_player_current(id) {
+            return None;
+        }
+        // SAFETY: The current session's index originated in a native player hook.
+        let handle = unsafe { crate::trace::tracked_entity(engine, id.slot().get()) }?;
         let lookup = || {
             if !self.is_player_current(id) {
                 return None;
             }
-            // SAFETY: This slot belongs to a currently observed player.
-            let edict = unsafe { entity(id.slot().get()) };
-            (!edict.is_null() && self.is_player_current(id)).then_some(edict)
+            let edict = handle.resolve(engine)?;
+            self.is_player_current(id).then_some(edict)
         };
         let user_id = if let Some(userid) = engine.userid {
             // SAFETY: The edict was just obtained and its session revalidated.
@@ -339,18 +391,60 @@ impl Context<'_> {
         };
         let auth_id = if let Some(auth_id) = engine.auth_id {
             // SAFETY: Resolve and validate the edict again after any prior native call.
-            let result = unsafe { auth_id(lookup()?) };
-            if !self.is_player_current(id) {
+            let edict = lookup()?;
+            let result = unsafe { auth_id(edict) };
+            // SAFETY: A reentrant callback can change the occupant, but the
+            // edict arena remains readable while the map epoch is unchanged.
+            if !self.is_player_current(id) || !unsafe { handle.still_matches(edict) } {
                 return None;
             }
-            unsafe { copy_string(result) }
+            unsafe { copy_string(result, MAX_ENGINE_STRING) }
         } else {
             None
         };
-        self.is_player_current(id).then_some(PlayerInfo {
+        lookup()?;
+        Some(PlayerInfo {
             id,
             user_id,
             auth_id,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_string_reads_stop_at_nul_or_budget() {
+        // SAFETY: Each input contains a NUL or has at least the specified
+        // number of initialized readable bytes.
+        unsafe {
+            assert_eq!(copy_string(c"".as_ptr(), 4096).as_deref(), Some(c""));
+            assert_eq!(copy_string(c"abc".as_ptr(), 4).as_deref(), Some(c"abc"));
+            let unterminated = *b"abc";
+            assert!(copy_string(unterminated.as_ptr().cast(), 3).is_none());
+            assert!(copy_string(ptr::null(), 3).is_none());
+        }
+    }
+
+    #[test]
+    fn irreversible_registrations_share_a_bounded_name_budget() {
+        assert!(reserve_name(name("Test").unwrap(), true).is_ok());
+        assert_eq!(
+            reserve_name(name("test").unwrap(), true),
+            Err(EngineError::RegistrationRejected)
+        );
+        assert_eq!(
+            reserve_name(name("TEST").unwrap(), false),
+            Err(EngineError::AlreadyRegistered)
+        );
+        for index in 1..MAX_CONSOLE_REGISTRATIONS {
+            assert!(reserve_name(name(&format!("test{index}")).unwrap(), false).is_ok());
+        }
+        assert_eq!(
+            reserve_name(name("one_more").unwrap(), true),
+            Err(EngineError::RegistrationLimit)
+        );
     }
 }

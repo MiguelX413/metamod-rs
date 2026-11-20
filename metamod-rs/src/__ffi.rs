@@ -194,8 +194,10 @@ fn compatible(version: &CStr) -> bool {
 }
 
 /// # Safety
-/// Metamod must supply a readable C string and utility table, a writable
-/// output pointer, and the plugin's module-lifetime metadata.
+/// The version must be readable up to its NUL or 64 bytes. The utility
+/// slots must be aligned and initialized, the output aligned and writable,
+/// and the metadata must remain live for the module lifetime. Metamod
+/// must invoke query and later callbacks on the server thread.
 pub unsafe fn query(
     version: *const c_char,
     out: *mut *mut PluginInfo,
@@ -207,7 +209,10 @@ pub unsafe fn query(
     }
     contained(|| {
         // SAFETY: Validity follows from the loader contract above.
-        if !compatible(unsafe { CStr::from_ptr(version) }) {
+        let Some(version) = (unsafe { engine::copy_string(version, 64) }) else {
+            return 0;
+        };
+        if !compatible(&version) {
             return 0;
         }
         let current = thread::current().id();
@@ -231,7 +236,8 @@ pub unsafe fn query(
 
 /// # Safety
 /// Called on the server thread that queried the plugin. Metamod must supply
-/// a writable table and keep globals valid for all subsequent hook calls.
+/// an aligned writable table and keep the aligned globals valid until each
+/// hook returns, including when a nested hook signals shutdown.
 pub unsafe fn attach<P: Plugin>(
     now: LoadTime,
     table: *mut MetaFunctions,
@@ -381,6 +387,7 @@ fn hook(callback: impl FnOnce()) {
         }
         if let State::Attached { globals, .. } = STATE.get() {
             let _result = ResultWriter(globals, MRES_IGNORED);
+            engine::invalidate_command_read();
             callback();
         }
     });
@@ -477,6 +484,7 @@ fn synchronous<P: Plugin, T: Default>(
             return T::default();
         };
         let mut result = ResultWriter(globals, MRES_IGNORED);
+        engine::invalidate_command_read();
         if disabled || SHUTDOWN.get() || RUNNING.replace(true) {
             return T::default();
         }
@@ -606,8 +614,9 @@ fn player_slot(edict: *mut edict_t) -> Option<PlayerSlot> {
 unsafe extern "C" fn server_command<P: Plugin>() {
     let _ = contained(|| {
         // Native commands do not own a Metamod hook-result slot.
+        // SAFETY: The engine invoked this trampoline with live argument storage.
         if registration_available()
-            && let Some(command) = engine::read_command()
+            && let Some(command) = unsafe { engine::read_command() }
         {
             submit::<P>(Event::Command(command));
         }
@@ -628,6 +637,9 @@ unsafe extern "C" fn begin_map(_: *mut edict_t, _: c_int, _: c_int) {
 unsafe extern "C" fn server_activate<P: Plugin>(_: *mut edict_t, _: c_int, _: c_int) {
     hook(|| {
         if !SHUTDOWN.get() {
+            if INDEX_LOOKUP.get().is_some() {
+                INDEX_LOOKUP.set(Some(true));
+            }
             crate::trace::activate_map();
         }
         submit::<P>(Event::Activate);
@@ -693,6 +705,62 @@ mod tests {
             log: None,
             console: None,
         }));
+    }
+
+    #[test]
+    fn rejected_native_cvar_is_attempted_only_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn missing(_: *const c_char) -> *mut raw::cvar_t {
+            ptr::null_mut()
+        }
+
+        unsafe extern "C" fn reject(_: *mut raw::cvar_t) {
+            ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+            // SAFETY: This synthetic reentry runs with live hook globals.
+            unsafe { start_frame::<TestPlugin>() };
+        }
+
+        #[derive(Default)]
+        struct TestPlugin;
+        impl Plugin for TestPlugin {
+            const METADATA: Metadata = METADATA;
+            fn start_frame(&mut self, context: &mut Context<'_>) {
+                for name in ["test_rejected", "TEST_REJECTED", "test_rejected"] {
+                    assert_eq!(
+                        context.server().register_cvar(name, "value"),
+                        Err(crate::EngineError::RegistrationRejected)
+                    );
+                }
+            }
+        }
+        queried();
+        ENGINE.set(Engine {
+            find_cvar: Some(missing),
+            register_cvar: Some(reject),
+            ..Default::default()
+        });
+        let mut globals = MetaGlobals::default();
+        let mut functions = MetaFunctions::default();
+        // SAFETY: All invocations run on the attached thread with live globals.
+        unsafe {
+            assert_eq!(
+                attach::<TestPlugin>(PT_STARTUP, &mut functions, &mut globals),
+                1
+            );
+            start_frame::<TestPlugin>();
+            assert!(matches!(
+                STATE.get(),
+                State::Attached {
+                    disabled: false,
+                    ..
+                }
+            ));
+            game_shutdown::<TestPlugin>();
+        }
+        assert_eq!(ATTEMPTS.load(Ordering::Relaxed), 1);
     }
 
     #[test]

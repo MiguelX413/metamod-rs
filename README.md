@@ -276,6 +276,34 @@ On Win32 the export macro uses stdcall for `GiveFnptrsToDll` and cdecl
 for the Metamod entry points. Metamod resolves these exports by name.
 The SDK leaves PE ordinals to the linker.
 
+## Native memory and registration contracts
+
+- The SDK allows 256 irreversible console registrations per attachment,
+  shared by commands and CVars. Names are reserved before the native call.
+  A rejected CVar attempt consumes its reservation, so retrying the same
+  name cannot allocate another retained record. The native registration
+  API returns no ownership or failure status. The SDK keeps submitted
+  storage resident and does not infer ownership from a name lookup.
+- Version reads are capped at 64 bytes, command tokens share a 4,096-byte
+  budget, and other native string copies are capped at 4,096 bytes per
+  value, including the terminator. Null or over-limit values are treated as
+  absent. These limits bound reads. The host still supplies a stable,
+  initialized pointer readable through the first NUL or the limit,
+  whichever comes first. Argument getters must also preserve the active
+  command context unless an observable callback invalidates it.
+- Engine data is read on the server thread. Native edict slots must remain
+  readable for their map epoch, and the host must report map transitions
+  before discarding the arena. The SDK checks player sessions, edict serials,
+  and map epochs around native calls. It copies strings before making
+  another native call. Native return buffers must remain readable until
+  that copy completes.
+- Metamod provides aligned initialized ABI data, valid callback functions,
+  and writable hook-result globals through the return of each active
+  hook. This includes outer hooks when shutdown is observed reentrantly.
+  The SDK revokes engine access on shutdown and defers dropping plugin
+  state until its active callback returns. Startup-only loading and
+  `PT_NEVER` remain in effect.
+
 ## Typed hooks and coverage
 
 The [API coverage matrix](docs/api-coverage.md) tracks generated ABI tables,

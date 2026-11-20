@@ -10,6 +10,9 @@ use core::ffi::{CStr, c_int};
     non_upper_case_globals,
     clippy::type_complexity
 )]
+/// Native ABI descriptions. Pointer validity, alignment, initialization,
+/// thread affinity, and call-specific lifetimes remain the caller's
+/// responsibility when using these bindings.
 pub mod raw {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }

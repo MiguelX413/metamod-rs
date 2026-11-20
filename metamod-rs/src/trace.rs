@@ -1,6 +1,6 @@
 use crate::{
     __ffi, Context, Server,
-    engine::{Engine, copy_string},
+    engine::{Engine, MAX_ENGINE_STRING, copy_string},
 };
 use metamod_sys::{
     EngineGlobals,
@@ -62,9 +62,19 @@ impl EntityHandle {
         self.index
     }
 
-    fn resolve(self, engine: Engine) -> Option<*mut edict_t> {
+    /// # Safety
+    /// The pointer must have been resolved for this handle on the current
+    /// thread. On the same map its edict slot must remain allocated even
+    /// if the entity occupying it has been freed or replaced.
+    pub(crate) unsafe fn still_matches(self, edict: *mut edict_t) -> bool {
+        active_map() == Some(self.map)
+            // SAFETY: The epoch guards the edict arena lifetime.
+            && unsafe { live_serial(edict) } == Some(self.serial)
+    }
+
+    pub(crate) fn resolve(self, engine: Engine) -> Option<*mut edict_t> {
         let entity = engine.entity?;
-        if active_map() != Some(self.map) {
+        if active_map() != Some(self.map) || !valid_index(self.index) {
             return None;
         }
         // SAFETY: The index originated from this map's engine edict table.
@@ -75,6 +85,25 @@ impl EntityHandle {
         // SAFETY: The getter returned a current-map edict or null.
         (unsafe { live_serial(edict) } == Some(self.serial)).then_some(edict)
     }
+}
+
+fn valid_index(index: i32) -> bool {
+    let limit = LIMIT.get();
+    index >= 0 && (limit <= 0 || index < limit)
+}
+
+/// # Safety
+/// The index must originate from a player lifecycle hook on the active map.
+pub(crate) unsafe fn tracked_entity(engine: Engine, index: i32) -> Option<EntityHandle> {
+    let map = active_map()?;
+    if !valid_index(index) {
+        return None;
+    }
+    let lookup = engine.entity?;
+    // SAFETY: This index originated from the current engine edict table.
+    find_entity(|index| unsafe { lookup(index) }, index, map)
+        .ok()
+        .flatten()
 }
 
 /// A non-null edict must be readable until another native call or map change.
@@ -250,12 +279,13 @@ impl Context<'_> {
             // SAFETY: The bit pattern comes from the engine's own string_t.
             // GoldSrc uses signed offsets at this callback boundary.
             let string = unsafe { lookup(index as i32) };
-            if active_map() != Some(entity.map) {
+            // SAFETY: The edict slot remains readable while its map is active.
+            if !unsafe { entity.still_matches(edict) } {
                 return None;
             }
             // SAFETY: The current-map engine string can be read until the
             // next native call. Copy it before revalidating the edict.
-            *value = unsafe { copy_string(string) };
+            *value = unsafe { copy_string(string, MAX_ENGINE_STRING) };
             entity.resolve(engine)?;
         }
         let [
