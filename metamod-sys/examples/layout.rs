@@ -86,6 +86,35 @@ fn main() {
     );
     println!("start_frame {}", offset_of!(DllFunctions, pfnStartFrame));
     println!(
+        "EngineFunctions {} {}",
+        size_of::<EngineFunctions>(),
+        align_of::<EngineFunctions>()
+    );
+    println!(
+        "pfnServerPrint {}",
+        offset_of!(EngineFunctions, pfnServerPrint)
+    );
+    println!(
+        "pfnIndexOfEdict {}",
+        offset_of!(EngineFunctions, pfnIndexOfEdict)
+    );
+    println!(
+        "pfnServerActivate {}",
+        offset_of!(DllFunctions, pfnServerActivate)
+    );
+    println!(
+        "pfnServerDeactivate {}",
+        offset_of!(DllFunctions, pfnServerDeactivate)
+    );
+    println!(
+        "pfnClientPutInServer {}",
+        offset_of!(DllFunctions, pfnClientPutInServer)
+    );
+    println!(
+        "pfnClientDisconnect {}",
+        offset_of!(DllFunctions, pfnClientDisconnect)
+    );
+    println!(
         "constants {} {} {} {} {}",
         META_INTERFACE.to_str().unwrap(),
         ENTITY_INTERFACE,

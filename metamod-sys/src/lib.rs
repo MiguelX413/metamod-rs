@@ -4,7 +4,12 @@
 
 use core::ffi::{CStr, c_int};
 
-#[allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
+#[allow(
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    clippy::type_complexity
+)]
 pub mod raw {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }

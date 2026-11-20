@@ -39,5 +39,12 @@ int main() {
     std::printf("log_developer %zu\n", offsetof(mutil_funcs_t, pfnLogDeveloper));
     std::printf("DllFunctions %zu %zu\n", sizeof(DLL_FUNCTIONS), alignof(DLL_FUNCTIONS));
     std::printf("start_frame %zu\n", offsetof(DLL_FUNCTIONS, pfnStartFrame));
+    std::printf("EngineFunctions %zu %zu\n", sizeof(enginefuncs_t), alignof(enginefuncs_t));
+    std::printf("pfnServerPrint %zu\n", offsetof(enginefuncs_t, pfnServerPrint));
+    std::printf("pfnIndexOfEdict %zu\n", offsetof(enginefuncs_t, pfnIndexOfEdict));
+    std::printf("pfnServerActivate %zu\n", offsetof(DLL_FUNCTIONS, pfnServerActivate));
+    std::printf("pfnServerDeactivate %zu\n", offsetof(DLL_FUNCTIONS, pfnServerDeactivate));
+    std::printf("pfnClientPutInServer %zu\n", offsetof(DLL_FUNCTIONS, pfnClientPutInServer));
+    std::printf("pfnClientDisconnect %zu\n", offsetof(DLL_FUNCTIONS, pfnClientDisconnect));
     std::printf("constants %s %d %d %d %d\n", META_INTERFACE_VERSION, INTERFACE_VERSION, PT_NEVER, PT_STARTUP, MRES_IGNORED);
 }

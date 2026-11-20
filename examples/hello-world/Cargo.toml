@@ -15,4 +15,4 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-metamod = { path = "../../metamod" }
+metamod = { path = "../../metamod", features = ["macros"] }

@@ -1,29 +1,31 @@
-use metamod::{Context, Metadata, Plugin, export_plugin};
-use std::sync::atomic::{AtomicBool, Ordering};
+use metamod::prelude::*;
 
-struct HelloWorld;
+#[derive(Default)]
+struct HelloWorld {
+    first_frame_seen: bool,
+}
 
+#[metamod_plugin(
+    name = "Rust Hello World",
+    version = "0.1.0",
+    author = "metamod-rs contributors",
+    log_tag = "RUSTHELLO"
+)]
 impl Plugin for HelloWorld {
-    const METADATA: Metadata = Metadata {
-        name: c"Rust Hello World",
-        version: c"0.1.0",
-        date: c"",
-        author: c"metamod-rs contributors",
-        url: c"",
-        log_tag: c"RUSTHELLO",
-    };
-
-    fn initialize(context: &Context<'_>) -> bool {
-        context.print_console(c"Hello from Rust Metamod");
+    fn initialize(&mut self, ctx: &mut Context<'_>) -> bool {
+        ctx.server().print("Hello from Rust Metamod");
         true
     }
 
-    fn start_frame(context: &Context<'_>) {
-        static FIRST_FRAME: AtomicBool = AtomicBool::new(true);
-        if FIRST_FRAME.swap(false, Ordering::Relaxed) {
-            context.print_console(c"Rust StartFrame hook ran");
+    fn start_frame(&mut self, ctx: &mut Context<'_>) {
+        if !self.first_frame_seen {
+            self.first_frame_seen = true;
+            ctx.server().print("Rust StartFrame hook ran");
         }
     }
-}
 
-export_plugin!(HelloWorld);
+    fn player_join(&mut self, ctx: &mut Context<'_>, player: PlayerId) {
+        ctx.server()
+            .print(&format!("Hello, player in slot {}!", player.get()));
+    }
+}

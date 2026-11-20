@@ -1,13 +1,58 @@
 # metamod-rs
 
-A minimal Rust SDK for native GoldSrc Metamod plugins. The first milestone
-supports startup initialization, server logging, and an observational
-`StartFrame` pre-hook. Bindgen is a build dependency of `metamod-sys`.
+A Rust SDK for native GoldSrc Metamod plugins with server-thread-owned state,
+typed game-DLL hooks, and scoped server access. Bindgen runs at build time.
+
+## Write a plugin
+
+Set your library's crate type to `cdylib` and add `metamod` as a dependency with
+the optional `macros` feature. The attribute fills in metadata and exports the
+Metamod entry points.
+
+```rust
+use metamod::prelude::*;
+
+#[derive(Default)]
+struct MyPlugin {
+    greeted: bool,
+}
+
+#[metamod_plugin(name = "My Plugin", version = "0.1.0", author = "Developer")]
+impl Plugin for MyPlugin {
+    fn start_frame(&mut self, ctx: &mut Context<'_>) {
+        if !self.greeted {
+            self.greeted = true;
+            ctx.server().print("Hello from Rust!");
+        }
+    }
+}
+```
+
+The attribute also accepts `date`, `url`, and `log_tag`. With the macro feature
+disabled, declare `const METADATA: Metadata` in your `impl Plugin` using static
+C strings, then call `export_plugin!(MyPlugin)` once in the library. Both forms
+use the same dispatch. To migrate a stateless plugin, implement `Default`
+and add `&mut self` and `&mut Context<'_>` to its callbacks. Existing
+`Context::log` and `Context::print_console` methods still accept C strings.
+
+| Plugin method | Timing |
+| --- | --- |
+| `initialize` | Once per startup attach attempt, after construction. Return `false` to decline. |
+| `start_frame` | Before the game DLL's frame callback. |
+| `server_activate` | After the game DLL activates the map. |
+| `server_deactivate` | Before the game DLL deactivates the map. |
+| `player_join` | After the game DLL puts a player into the server. |
+| `player_disconnect` | Before the game DLL disconnects a player. |
+
+Player hooks receive a `PlayerId` resolved through GoldSrc. It represents a
+one-based slot, which the engine can reuse after disconnect. Use the lifecycle
+hooks to clear map-specific state. Use `ctx.server().print(&str)` for console
+messages within a callback.
 
 ## Build and install hello-world
 
 Initialize the pinned Metamod and HLSDK submodules before building. Use Rust
-with edition 2024 support, Clang and host libclang, and C/C++ development
+stable 1.88 or newer, Clang and host libclang, and C/C++ development
 headers for the target. For Linux i686, also install 32-bit linker and libc
 development files. On Ubuntu, the CI workflow installs `clang`,
 `libclang-dev`, and `g++-multilib`. Set `LIBCLANG_PATH` if bindgen cannot
@@ -43,29 +88,31 @@ line and shared library.
   exposes the upstream field names, integer enums, and nullable C function
   pointers. The export macro checks its entry points against the generated
   function pointer types at compile time.
-- `metamod` provides the safe `Plugin` trait and callback-scoped `Context`.
-  Declare static C-string metadata and invoke `export_plugin!(YourPlugin)`
-  once in a `cdylib`. See [hello-world](examples/hello-world/src/lib.rs).
-- The loader supplies valid C arguments and runs query, attach, and hooks on
-  the same server thread. It keeps the globals allocation alive while calling
-  the hook. The SDK copies the logging function pointer and reads and writes
-  foreign fields through raw pointers. The version string is borrowed only
-  during query, under the loader's guarantee of a valid readable C string.
-  Metadata and its strings have module lifetime. The safe context borrows a
-  Rust-owned callback scope and cannot cross threads.
-- Query accepts interface major 5 with minor 13 or newer. Attach publishes only
-  the pre-`GetEntityAPI2` table factory, which negotiates game DLL interface
-  140. `GiveFnptrsToDll` is required by both loaders, and its arguments are
-  unused in this milestone.
-- Thread-local state skips recursive user callbacks without holding a lock
-  across user or foreign code. Every attached frame invocation writes
-  `MRES_IGNORED` after any user code, including recursive and disabled frames.
-  An unwinding panic in initialization fails attach. An unwinding frame panic
-  disables user frame code for the rest of the process. Build with the default
-  unwind strategy. Aborting panics, panics in panic hooks, and foreign faults
-  can still terminate the server.
-- Plugins load at startup and refuse detach. Forced unloading can bypass the
-  plugin's refusal in Metamod, so keep the module resident until process exit.
+- `metamod` constructs one `Default` state value per startup attach attempt
+  and mutably borrows it for each callback. State survives map changes.
+  See [hello-world](examples/hello-world/src/lib.rs) for registration and
+  callback examples.
+- The loader supplies valid C arguments and calls `GiveFnptrsToDll`, query,
+  attach, and hooks on the server thread. It keeps Metamod globals live during
+  hooks. The SDK copies the few function pointers it uses and accesses
+  foreign fields through raw pointers. Metadata and its strings have module
+  lifetime. Scoped contexts and server handles cannot cross threads or
+  outlive their callbacks. An off-thread hook skips user code and leaves
+  server-thread globals alone.
+- Query accepts interface major 5 with minor 13 or newer. Both pre- and
+  post-`GetEntityAPI2` factories negotiate game-DLL interface 140. All
+  registered hooks are observational. They set `MRES_IGNORED` on the attached
+  thread, including on skipped recursive calls or after a panic.
+- A thread-local checked mutable borrow guards the entire callback, including
+  engine calls that can reenter through a different hook. Construction or
+  initialization panic fails attach. A rejected or failed instance is
+  dropped with separate panic containment. A hook panic disables all user
+  hooks for that instance. Build with the default unwind strategy. Aborting
+  panics, panics in panic hooks, and foreign faults can terminate the server.
+- Plugins load at startup and refuse detach. A successfully attached instance
+  stays resident until process exit, with no guaranteed shutdown destructor.
+  Release map-specific resources during `server_deactivate`. Metamod can
+  bypass detach refusal on forced unload, which the SDK does not support.
 
 Linux i686 is the verified deployment target. On Win32 the export macro uses
 stdcall for `GiveFnptrsToDll` and cdecl for the Metamod entry points. Bindgen
@@ -86,8 +133,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 The verification script checks ELF32/i386 and the four exported functions,
 compares C++ and Rust sizes, alignments, and field offsets, and opens the
 actual shared library with `dlopen`. It exercises version negotiation,
-metadata stability, startup-only attach, nested frame dispatch, hook results,
-and detach refusal. The Rust test also checks recursion and panic containment.
+metadata stability, startup-only attach, both hook tables, engine printing,
+player-slot translation, cross-hook reentry, hook results, and detach refusal.
+Rust tests cover failed initialization, panicking destructors, off-thread
+dispatch, and callback disabling after panic.
 The script accepts two optional paths for comparing against separate C++
 reference checkouts. Binding generation always uses the submodules.
 
@@ -96,8 +145,8 @@ Validated against alliedmodders/metamod-hl1 at
 `a0edb7792a96998d349325bebab8ea41ec5cb239`. Before the bindgen migration,
 a Ricochet startup on Metamod-P 1.21p109 confirmed both console messages,
 including a single `StartFrame` message, and `meta list` showed the plugin in
-`RUN`. The migrated plugin has been exercised in the loader harness. A new
-server smoke test, player gameplay, and a later map transition remain
+`RUN`. The current stateful plugin has been exercised in the loader harness.
+A new server smoke test, player gameplay, and a later map transition remain
 unverified.
 
 Before publishing the SDK, run the example on isolated servers with both

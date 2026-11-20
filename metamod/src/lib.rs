@@ -1,4 +1,4 @@
-//! Startup-only GoldSrc Metamod plugins with an observational StartFrame hook.
+//! Startup-only GoldSrc Metamod plugins with stateful, observational hooks.
 
 use std::ffi::CStr;
 
@@ -6,7 +6,16 @@ use std::ffi::CStr;
 pub mod __ffi;
 mod runtime;
 
-pub use runtime::Context;
+pub use runtime::{Context, PlayerId, Server};
+
+#[cfg(feature = "macros")]
+pub use metamod_macros::metamod_plugin;
+
+pub mod prelude {
+    #[cfg(feature = "macros")]
+    pub use crate::metamod_plugin;
+    pub use crate::{Context, Metadata, PlayerId, Plugin, Server, export_plugin};
+}
 
 /// Strings remain available to Metamod for the lifetime of the module.
 pub struct Metadata {
@@ -18,18 +27,51 @@ pub struct Metadata {
     pub log_tag: &'static CStr,
 }
 
-pub trait Plugin: 'static {
+/// One server-thread-owned instance per successful startup attachment.
+pub trait Plugin: Default + 'static {
     const METADATA: Metadata;
 
-    /// Return false to decline attachment.
-    fn initialize(_context: &Context<'_>) -> bool {
+    /// Return false to decline attachment and drop this instance.
+    fn initialize(&mut self, _context: &mut Context<'_>) -> bool {
         true
     }
 
-    fn start_frame(_context: &Context<'_>) {}
+    fn start_frame(&mut self, _context: &mut Context<'_>) {}
+
+    /// Called after the game DLL activates the map.
+    fn server_activate(&mut self, _context: &mut Context<'_>) {}
+
+    /// Called before the game DLL deactivates the map.
+    fn server_deactivate(&mut self, _context: &mut Context<'_>) {}
+
+    /// Called after the game DLL puts the player into the server.
+    fn player_join(&mut self, _context: &mut Context<'_>, _player: PlayerId) {}
+
+    /// Called before the game DLL disconnects the player.
+    fn player_disconnect(&mut self, _context: &mut Context<'_>, _player: PlayerId) {}
 }
 
 /// Put this once at the root of the plugin's cdylib crate.
+///
+/// ```
+/// use metamod::prelude::*;
+///
+/// #[derive(Default)]
+/// struct MyPlugin;
+///
+/// impl Plugin for MyPlugin {
+///     const METADATA: Metadata = Metadata {
+///         name: c"My Plugin",
+///         version: c"0.1.0",
+///         author: c"Developer",
+///         date: c"",
+///         url: c"",
+///         log_tag: c"MYPLUGIN",
+///     };
+/// }
+///
+/// export_plugin!(MyPlugin);
+/// ```
 #[macro_export]
 macro_rules! export_plugin {
     ($plugin:ty) => {
@@ -40,17 +82,21 @@ macro_rules! export_plugin {
         #[cfg(all(windows, target_arch = "x86"))]
         #[unsafe(no_mangle)]
         unsafe extern "stdcall" fn GiveFnptrsToDll(
-            _: *mut __metamod_ffi::EngineFunctions,
+            engine: *mut __metamod_ffi::EngineFunctions,
             _: *mut __metamod_ffi::EngineGlobals,
         ) {
+            // SAFETY: The loader supplies the GoldSrc engine function table.
+            unsafe { __metamod_ffi::give_engine(engine) };
         }
 
         #[cfg(not(all(windows, target_arch = "x86")))]
         #[unsafe(no_mangle)]
         unsafe extern "C" fn GiveFnptrsToDll(
-            _: *mut __metamod_ffi::EngineFunctions,
+            engine: *mut __metamod_ffi::EngineFunctions,
             _: *mut __metamod_ffi::EngineGlobals,
         ) {
+            // SAFETY: The loader supplies the GoldSrc engine function table.
+            unsafe { __metamod_ffi::give_engine(engine) };
         }
 
         #[unsafe(no_mangle)]
