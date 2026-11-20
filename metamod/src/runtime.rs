@@ -10,6 +10,12 @@ use std::{
 pub struct PlayerSlot(NonZeroU32);
 
 impl PlayerSlot {
+    /// Construct a slot from a positive GoldSrc index. This validates the
+    /// numeric range only. Use `Context::player_at` to check occupancy.
+    pub fn new(index: u32) -> Option<Self> {
+        Self::from_index(i32::try_from(index).ok()?)
+    }
+
     pub(crate) fn from_index(index: i32) -> Option<Self> {
         Some(Self(NonZeroU32::new(u32::try_from(index).ok()?)?))
     }

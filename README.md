@@ -64,10 +64,11 @@ observed session in that slot for the current map. Keep the full ID as the
 key for per-player state. `player.slot().get()` and the older `player.get()`
 return the slot number for display. Use `ctx.is_player_current(id)` to validate
 a saved ID and `ctx.player_at(slot)` to look up the session currently tracked
-in a slot. A disconnect, slot replacement, or map boundary invalidates old
-IDs immediately. Tracking depends on the host delivering its normal join,
-disconnect, and map callbacks on the server thread. It covers players whose
-joins the plugin observed.
+in a slot. Use `PlayerSlot::new(index)` to validate a numeric index from
+configuration or user input before lookup. A disconnect, slot replacement,
+or map boundary invalidates old IDs immediately. Tracking depends on the
+host delivering its normal join, disconnect, and map callbacks on the
+server thread. It covers players whose joins the plugin observed.
 
 Use the lifecycle hooks to clear map-specific state and
 `ctx.server().print(&str)` for console messages within a callback.
@@ -158,6 +159,15 @@ line and shared library.
   therefore observe an event for a session or map that has already ended.
   If another player or map event interrupts engine slot resolution, tracking
   is cleared and the ambiguous lookup is discarded.
+- A dispatch accepts up to 4,096 events, counting its initial callback and
+  all events enqueued during delivery. A submission beyond that budget
+  discards queued notifications and disables user callbacks for the
+  attachment. A one-time warning goes to process stderr and identifies the
+  plugin and the exceeded budget. Engine bookkeeping and hook results
+  continue, and an observed
+  shutdown still drops the instance. This bounds both queue growth and
+  callback feedback chains. A callback that never returns remains outside
+  the budget's control.
 - Construction or initialization panic fails attach. A rejected or failed
   instance is dropped with separate panic containment. A hook panic discards
   pending notifications and disables user hooks while SDK bookkeeping and

@@ -10,6 +10,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
     ffi::{CStr, c_char, c_int},
+    io::{self, Write},
     mem::ManuallyDrop,
     num::NonZeroU64,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -54,10 +55,15 @@ enum Event {
     Disconnect(PlayerId),
 }
 
+// Bound both the queue and the total work, even if each callback only
+// enqueues one successor. The budget counts the root notification too.
+const MAX_EVENTS_PER_DISPATCH: usize = 4096;
+
 struct Events {
     players: HashMap<PlayerSlot, PlayerId>,
     serial: u64,
     pending: VecDeque<Event>,
+    submitted: usize,
 }
 
 impl Events {
@@ -78,7 +84,7 @@ thread_local! {
     // teardown can occur after the engine has shut down.
     static INSTANCE: RefCell<Option<ManuallyDrop<Box<dyn Any>>>> = const { RefCell::new(None) };
     static EVENTS: RefCell<Events> = RefCell::new(Events {
-        players: HashMap::new(), serial: 0, pending: VecDeque::new(),
+        players: HashMap::new(), serial: 0, pending: VecDeque::new(), submitted: 0,
     });
     static RUNNING: Cell<bool> = const { Cell::new(false) };
     static INDEX_LOOKUP: Cell<Option<bool>> = const { Cell::new(None) };
@@ -374,11 +380,48 @@ fn submit<P: Plugin>(event: Event) {
     else {
         return;
     };
-    if SHUTDOWN.get() || matches!(event, Event::Frame) && RUNNING.get() {
+    let nested = RUNNING.get();
+    if SHUTDOWN.get() || matches!(event, Event::Frame) && nested {
         return;
     }
-    EVENTS.with(|events| events.borrow_mut().pending.push_back(event));
-    drain::<P>();
+    let accepted = EVENTS.with(|events| {
+        let mut events = events.borrow_mut();
+        if !nested {
+            events.submitted = 0;
+        }
+        if events.submitted == MAX_EVENTS_PER_DISPATCH {
+            return false;
+        }
+        events.submitted += 1;
+        events.pending.push_back(event);
+        true
+    });
+    if accepted {
+        drain::<P>();
+    } else {
+        disable_callbacks();
+        // Metamod and engine logging can dispatch hooks. Use stderr
+        // directly, after disabling callbacks and releasing the queue borrow.
+        let _ = writeln!(
+            io::stderr(),
+            "[metamod-rs] warning: plugin {:?} exceeded its dispatch budget of {MAX_EVENTS_PER_DISPATCH} events; user callbacks disabled",
+            P::METADATA.name
+        );
+    }
+}
+
+fn disable_callbacks() {
+    if let State::Attached {
+        services, globals, ..
+    } = STATE.get()
+    {
+        STATE.set(State::Attached {
+            services,
+            globals,
+            disabled: true,
+        });
+    }
+    EVENTS.with(|events| events.borrow_mut().pending.clear());
 }
 
 struct Running;
@@ -394,10 +437,7 @@ fn drain<P: Plugin>() {
         return;
     }
     let _running = Running;
-    let State::Attached {
-        services, globals, ..
-    } = STATE.get()
-    else {
+    let State::Attached { services, .. } = STATE.get() else {
         return;
     };
 
@@ -423,12 +463,7 @@ fn drain<P: Plugin>() {
             });
         });
         if result.is_none() {
-            STATE.set(State::Attached {
-                services,
-                globals,
-                disabled: true,
-            });
-            EVENTS.with(|events| events.borrow_mut().pending.clear());
+            disable_callbacks();
             break;
         }
     }
@@ -552,6 +587,96 @@ mod tests {
         }));
     }
 
+    #[derive(Default)]
+    struct BudgetPlugin {
+        calls: usize,
+        peak_pending: usize,
+    }
+
+    impl Plugin for BudgetPlugin {
+        const METADATA: Metadata = METADATA;
+
+        fn start_frame(&mut self, _: &mut Context<'_>) {
+            self.calls += 1;
+            for _ in 0..MAX_EVENTS_PER_DISPATCH {
+                submit::<Self>(Event::Activate);
+                let pending = EVENTS.with(|events| events.borrow().pending.len());
+                self.peak_pending = self.peak_pending.max(pending);
+            }
+        }
+
+        fn server_activate(&mut self, _: &mut Context<'_>) {
+            self.calls += 1;
+            submit::<Self>(Event::Activate);
+        }
+    }
+
+    fn exercise_dispatch_budget(first: unsafe extern "C" fn(), expected: (usize, usize)) {
+        queried();
+        let mut globals = MetaGlobals::default();
+        let mut functions = MetaFunctions::default();
+        // SAFETY: All calls run on the attached thread with live globals.
+        unsafe {
+            assert_eq!(
+                attach::<BudgetPlugin>(PT_STARTUP, &mut functions, &mut globals),
+                1
+            );
+            first();
+        }
+        assert_eq!(globals.mres, MRES_IGNORED);
+        assert!(EVENTS.with(|events| events.borrow().pending.is_empty()));
+        assert!(matches!(
+            STATE.get(),
+            State::Attached { disabled: true, .. }
+        ));
+        assert!(!RUNNING.get());
+
+        globals.mres = MRES_UNSET;
+        // SAFETY: The test keeps the attached globals live.
+        unsafe { start_frame::<BudgetPlugin>() };
+        assert_eq!(globals.mres, MRES_IGNORED);
+        INSTANCE.with(|instance| {
+            let slot = instance.borrow();
+            let plugin = slot
+                .as_ref()
+                .unwrap()
+                .downcast_ref::<BudgetPlugin>()
+                .unwrap();
+            assert_eq!((plugin.calls, plugin.peak_pending), expected);
+        });
+        // SAFETY: Shutdown runs on the attached thread with live globals.
+        unsafe { game_shutdown::<BudgetPlugin>() };
+        assert!(INSTANCE.with(|instance| instance.borrow().is_none()));
+    }
+
+    #[test]
+    fn dispatch_budget_bounds_a_burst_of_pending_events() {
+        exercise_dispatch_budget(
+            start_frame::<BudgetPlugin>,
+            (1, MAX_EVENTS_PER_DISPATCH - 1),
+        );
+    }
+
+    #[test]
+    fn dispatch_budget_stops_a_feedback_loop_with_a_small_queue() {
+        unsafe extern "C" fn activate() {
+            // SAFETY: The helper runs this on the attached thread.
+            unsafe { server_activate::<BudgetPlugin>(ptr::null_mut(), 0, 0) };
+        }
+        exercise_dispatch_budget(activate, (MAX_EVENTS_PER_DISPATCH, 0));
+    }
+
+    #[test]
+    fn public_player_slot_constructor_checks_the_engine_index_range() {
+        assert_eq!(PlayerSlot::new(0), None);
+        assert_eq!(PlayerSlot::new(7).unwrap().get(), 7);
+        assert_eq!(
+            PlayerSlot::new(i32::MAX as u32).unwrap().get(),
+            i32::MAX as u32
+        );
+        assert_eq!(PlayerSlot::new(i32::MAX as u32 + 1), None);
+    }
+
     #[test]
     fn nested_lifecycle_is_deferred_and_panic_disables_user_hooks() {
         #[derive(Default)]
@@ -572,6 +697,7 @@ mod tests {
                 // SAFETY: These synthetic hooks run on the attached thread.
                 unsafe {
                     start_frame::<Self>();
+                    server_activate::<Self>(ptr::null_mut(), 0, 0);
                     server_deactivate::<Self>();
                 }
                 assert!(!ctx.is_player_current(player));
@@ -614,7 +740,10 @@ mod tests {
         INSTANCE.with(|instance| {
             let slot = instance.borrow();
             let plugin = slot.as_ref().unwrap().downcast_ref::<TestPlugin>().unwrap();
-            assert_eq!(plugin.trace, ["frame", "frame end", "deactivate"]);
+            assert_eq!(
+                plugin.trace,
+                ["frame", "frame end", "activate", "deactivate"]
+            );
         });
         assert!(matches!(
             STATE.get(),
