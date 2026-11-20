@@ -5,12 +5,12 @@ typed game-DLL hooks, and scoped server access. Bindgen runs at build time.
 
 ## Write a Metamod plugin
 
-Set your library's crate type to `cdylib` and add `metamod` as a dependency with
+Set your library's crate type to `cdylib` and add `metamod-rs` as a dependency with
 the optional `macros` feature. The attribute fills in metadata and exports the
 Metamod entry points.
 
 ```rust
-use metamod::prelude::*;
+use metamod_rs::prelude::*;
 
 #[derive(Default)]
 struct MyPlugin {
@@ -183,7 +183,7 @@ engine-demo shows explicit attribute arguments.
   exposes the upstream field names, integer enums, and nullable C function
   pointers. The export macro checks its entry points against the generated
   function pointer types at compile time.
-- `metamod` constructs one `Default` state value per startup attach attempt
+- `metamod-rs` constructs one `Default` state value per startup attach attempt
   and mutably borrows it for each callback. State survives map changes.
   See [hello-world](examples/hello-world/src/lib.rs) for registration and
   callback examples.

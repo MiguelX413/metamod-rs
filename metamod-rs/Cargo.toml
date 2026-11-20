@@ -1,5 +1,5 @@
 [package]
-name = "metamod"
+name = "metamod-rs"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

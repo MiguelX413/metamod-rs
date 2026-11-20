@@ -67,7 +67,7 @@ pub trait Plugin: Default + 'static {
 /// Put this once at the root of the plugin's cdylib crate.
 ///
 /// ```
-/// use metamod::prelude::*;
+/// use metamod_rs::prelude::*;
 ///
 /// #[derive(Default)]
 /// struct MyPlugin;

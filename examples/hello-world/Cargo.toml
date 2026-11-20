@@ -19,4 +19,4 @@ log_tag = "RUSTHELLO"
 crate-type = ["cdylib"]
 
 [dependencies]
-metamod = { path = "../../metamod", features = ["macros"] }
+metamod-rs = { path = "../../metamod-rs", features = ["macros"] }

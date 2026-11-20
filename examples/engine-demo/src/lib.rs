@@ -1,4 +1,4 @@
-use metamod::prelude::*;
+use metamod_rs::prelude::*;
 
 const MESSAGE: &str = "rust_hello_message";
 
