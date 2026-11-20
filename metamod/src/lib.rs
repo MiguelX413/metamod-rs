@@ -4,7 +4,10 @@ use std::ffi::CStr;
 
 #[doc(hidden)]
 pub mod __ffi;
+mod engine;
 mod runtime;
+
+pub use engine::{Command, EngineError, PlayerInfo};
 
 pub use runtime::{Context, InvalidPlayerSlot, PlayerId, PlayerSlot, Server};
 
@@ -14,7 +17,10 @@ pub use metamod_macros::metamod_plugin;
 pub mod prelude {
     #[cfg(feature = "macros")]
     pub use crate::metamod_plugin;
-    pub use crate::{Context, Metadata, PlayerId, PlayerSlot, Plugin, Server, export_plugin};
+    pub use crate::{
+        Command, Context, EngineError, Metadata, PlayerId, PlayerInfo, PlayerSlot, Plugin, Server,
+        export_plugin,
+    };
 }
 
 /// Strings remain available to Metamod for the lifetime of the module.
@@ -39,6 +45,9 @@ pub trait Plugin: Default + 'static {
     /// Best-effort cleanup when Metamod forwards the game-DLL shutdown hook.
     /// The SDK drops this instance afterward. Engine access is unavailable.
     fn shutdown(&mut self) {}
+
+    /// Handle a command registered through `Server::register_command`.
+    fn server_command(&mut self, _context: &mut Context<'_>, _command: &Command) {}
 
     fn start_frame(&mut self, _context: &mut Context<'_>) {}
 

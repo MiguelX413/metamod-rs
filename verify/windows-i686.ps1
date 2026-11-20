@@ -14,23 +14,8 @@ Push-Location $repo
 try {
     $env:CARGO_TARGET_DIR = Join-Path $work 'target'
     $target = 'i686-pc-windows-msvc'
-    cargo build --locked --release --target $target -p hello-world
+    cargo build --locked --release --target $target -p hello-world -p engine-demo
     cargo build --locked --target $target -p metamod-sys --example layout
-
-    $plugin = Join-Path $env:CARGO_TARGET_DIR "$target/release/hello_world.dll"
-    $pe = llvm-readobj --file-headers --coff-exports $plugin
-    $pe | Write-Output
-    $headers = $pe -join "`n"
-    if ($headers -notmatch 'Machine: IMAGE_FILE_MACHINE_I386' -or $headers -notmatch 'IMAGE_FILE_DLL') {
-        throw 'Expected an x86 PE DLL.'
-    }
-    $exports = @($pe | ForEach-Object {
-        if ($_ -match '^\s+Name: (\S+)$') { $Matches[1] }
-    } | Sort-Object)
-    $expected = @('GiveFnptrsToDll', 'Meta_Attach', 'Meta_Detach', 'Meta_Query')
-    if (($exports -join ',') -cne ($expected -join ',')) {
-        throw "Unexpected DLL exports: $($exports -join ', ')"
-    }
 
     $includes = @(
         '/Iupstream/metamod-hl1/metamod'
@@ -50,7 +35,24 @@ try {
         Compare-Object $cppLayout $rustLayout | Out-Host
         throw 'Rust and C++ ABI layouts differ.'
     }
-    & $loader $plugin
+    foreach ($example in 'hello-world', 'engine-demo') {
+        $dll = $example.Replace('-', '_') + '.dll'
+        $plugin = Join-Path $env:CARGO_TARGET_DIR "$target/release/$dll"
+        $pe = llvm-readobj --file-headers --coff-exports $plugin
+        $pe | Write-Output
+        $headers = $pe -join "`n"
+        if ($headers -notmatch 'Machine: IMAGE_FILE_MACHINE_I386' -or $headers -notmatch 'IMAGE_FILE_DLL') {
+            throw 'Expected an x86 PE DLL.'
+        }
+        $exports = @($pe | ForEach-Object {
+            if ($_ -match '^\s+Name: (\S+)$') { $Matches[1] }
+        } | Sort-Object)
+        $expected = @('GiveFnptrsToDll', 'Meta_Attach', 'Meta_Detach', 'Meta_Query')
+        if (($exports -join ',') -cne ($expected -join ',')) {
+            throw "Unexpected DLL exports: $($exports -join ', ')"
+        }
+        & $loader $plugin $example
+    }
     Write-Output 'Win32 ABI and loader checks passed.'
 } finally {
     Pop-Location

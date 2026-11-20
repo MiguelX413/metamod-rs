@@ -3,8 +3,11 @@
 
 pub use metamod_sys::*;
 
-use crate::{Context, PlayerId, PlayerSlot, Plugin};
-use raw::{MetamodIndexOfEdict, MetamodServerPrint, NEW_DLL_FUNCTIONS, edict_t};
+use crate::{
+    Command, Context, PlayerId, PlayerSlot, Plugin,
+    engine::{self, Engine},
+};
+use raw::{NEW_DLL_FUNCTIONS, edict_t};
 use std::{
     any::Any,
     cell::{Cell, RefCell},
@@ -38,21 +41,15 @@ enum State {
     },
 }
 
-#[derive(Clone, Copy)]
-struct Engine {
-    print: MetamodServerPrint,
-    index: MetamodIndexOfEdict,
-}
-
 static OWNER: OnceLock<ThreadId> = OnceLock::new();
 
-#[derive(Clone, Copy)]
 enum Event {
     Frame,
     Activate,
     Deactivate,
     Join(PlayerId),
     Disconnect(PlayerId),
+    Command(Command),
 }
 
 // Bound both the queue and the total work, even if each callback only
@@ -79,7 +76,7 @@ impl Events {
 
 thread_local! {
     static STATE: Cell<State> = const { Cell::new(State::Unqueried) };
-    static ENGINE: Cell<Engine> = const { Cell::new(Engine { print: None, index: None }) };
+    static ENGINE: Cell<Engine> = Cell::new(Engine::default());
     // Only GameShutdown may extract and drop an attached instance. TLS
     // teardown can occur after the engine has shut down.
     static INSTANCE: RefCell<Option<ManuallyDrop<Box<dyn Any>>>> = const { RefCell::new(None) };
@@ -104,6 +101,21 @@ pub(crate) fn engine_available() -> bool {
             .unwrap_or(false)
 }
 
+pub(crate) fn engine() -> Option<Engine> {
+    engine_available().then(|| ENGINE.get())
+}
+
+pub(crate) fn registration_available() -> bool {
+    engine_available()
+        && matches!(
+            STATE.get(),
+            State::Attached {
+                disabled: false,
+                ..
+            }
+        )
+}
+
 pub(crate) fn player_at(slot: PlayerSlot) -> Option<PlayerId> {
     if !engine_available() {
         return None;
@@ -124,12 +136,7 @@ pub unsafe fn give_engine(table: *mut EngineFunctions) {
         }
         // SAFETY: The loader supplies these initialized slots. Copy them
         // without borrowing the table, which may be shared by the loader.
-        let engine = unsafe {
-            Engine {
-                print: ptr::addr_of!((*table).pfnServerPrint).read(),
-                index: ptr::addr_of!((*table).pfnIndexOfEdict).read(),
-            }
-        };
+        let engine = unsafe { Engine::read(table) };
         ENGINE.set(engine);
     });
 }
@@ -241,7 +248,7 @@ pub unsafe fn attach<P: Plugin>(
                 return 0;
             };
             let scope = ();
-            let mut context = make_context(&scope, services);
+            let mut context = make_context::<P>(&scope, services);
             if contained(|| plugin.initialize(&mut context)) != Some(true) {
                 // Drop separately so a destructor panic cannot collide with
                 // an unwind from initialization or escape into Metamod.
@@ -271,13 +278,14 @@ pub unsafe fn attach<P: Plugin>(
     .unwrap_or(0)
 }
 
-fn make_context(scope: &(), services: Services) -> Context<'_> {
+fn make_context<P: Plugin>(scope: &(), services: Services) -> Context<'_> {
     Context::new(
         scope,
         services.id,
         services.log,
         services.console,
         ENGINE.get().print,
+        server_command::<P>,
     )
 }
 
@@ -451,13 +459,14 @@ fn drain<P: Plugin>() {
                 let plugin = slot.as_mut().and_then(|plugin| plugin.downcast_mut::<P>());
                 if let Some(plugin) = plugin {
                     let scope = ();
-                    let mut context = make_context(&scope, services);
+                    let mut context = make_context::<P>(&scope, services);
                     match event {
                         Event::Frame => plugin.start_frame(&mut context),
                         Event::Activate => plugin.server_activate(&mut context),
                         Event::Deactivate => plugin.server_deactivate(&mut context),
                         Event::Join(player) => plugin.player_join(&mut context, player),
                         Event::Disconnect(player) => plugin.player_disconnect(&mut context, player),
+                        Event::Command(command) => plugin.server_command(&mut context, &command),
                     }
                 }
             });
@@ -514,6 +523,17 @@ fn player_slot(edict: *mut edict_t) -> Option<PlayerSlot> {
     } else {
         None
     }
+}
+
+unsafe extern "C" fn server_command<P: Plugin>() {
+    let _ = contained(|| {
+        // Native commands do not own a Metamod hook-result slot.
+        if registration_available()
+            && let Some(command) = engine::read_command()
+        {
+            submit::<P>(Event::Command(command));
+        }
+    });
 }
 
 unsafe extern "C" fn start_frame<P: Plugin>() {

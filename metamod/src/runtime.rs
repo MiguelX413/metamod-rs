@@ -86,12 +86,13 @@ pub struct Context<'callback> {
     log: Log,
     console: Log,
     print: MetamodServerPrint,
+    pub(crate) command: crate::engine::CommandCallback,
     scope: PhantomData<&'callback ()>,
 }
 
 /// Scoped access to server operations.
 pub struct Server<'context, 'callback> {
-    context: &'context Context<'callback>,
+    pub(crate) context: &'context Context<'callback>,
 }
 
 impl<'callback> Context<'callback> {
@@ -101,12 +102,14 @@ impl<'callback> Context<'callback> {
         log: Log,
         console: Log,
         print: MetamodServerPrint,
+        command: crate::engine::CommandCallback,
     ) -> Self {
         Self {
             id,
             log,
             console,
             print,
+            command,
             scope: PhantomData,
         }
     }

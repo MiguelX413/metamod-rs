@@ -13,6 +13,73 @@ static DLL_FUNCTIONS hooks{};
 static DLL_FUNCTIONS post_hooks{};
 static edict_t player{};
 static int logged;
+static bool engine_demo;
+
+static cvar_t *registered_cvar;
+static char cvar_value[1024];
+static void (*command)();
+static const char *args[] = {"RUST_HELLO", nullptr};
+static bool reenter_argv;
+static bool expire_player;
+
+static cvar_t *find_cvar(const char *name) {
+    return registered_cvar && std::strcmp(name, registered_cvar->name) == 0 ? registered_cvar : nullptr;
+}
+
+static void register_cvar(cvar_t *cvar) {
+    assert(!registered_cvar && std::strcmp(cvar->name, "rust_hello_message") == 0);
+    assert(cvar->flags == 0 && cvar->next == nullptr);
+    registered_cvar = cvar;
+    std::strcpy(cvar_value, cvar->string);
+    cvar->string = cvar_value;
+}
+
+static const char *get_cvar(const char *name) {
+    assert(find_cvar(name));
+    return registered_cvar->string;
+}
+
+static void set_cvar(const char *name, const char *value) {
+    assert(find_cvar(name));
+    std::strcpy(cvar_value, value);
+}
+
+static void register_command(const char *name, void (*callback)()) {
+    assert(!command && std::strcmp(name, "rust_hello") == 0 && callback);
+    command = callback;
+}
+
+static int command_argc() {
+    return args[1] ? 2 : 1;
+}
+
+static const char *command_argv(int index) {
+    assert(index >= 0 && index < command_argc());
+    if (reenter_argv) {
+        reenter_argv = false;
+        command();
+    }
+    return args[index];
+}
+
+static edict_t *entity_of_index(int index) {
+    assert(index == 7);
+    return &player;
+}
+
+static int player_userid(edict_t *edict) {
+    assert(edict == &player);
+    return 42;
+}
+
+static const char *player_authid(edict_t *edict) {
+    assert(edict == &player);
+    if (expire_player) {
+        expire_player = false;
+        hooks.pfnClientDisconnect(edict);
+    }
+    return "STEAM_ID_TEST";
+}
 
 static int index_of_edict(const edict_t *edict) {
     assert(edict == &player);
@@ -20,21 +87,40 @@ static int index_of_edict(const edict_t *edict) {
 }
 
 static void server_print(const char *message) {
-    static const char *expected[] = {
+    static const char *hello_output[] = {
         "Hello from Rust Metamod\n",
         "Rust StartFrame hook ran\n",
         "Hello, player in slot 7!\n",
-        "Hello, player in slot 7!\n",
     };
-    assert(logged < 4 && std::strcmp(message, expected[logged]) == 0);
+    static const char *engine_output[] = {
+        "Rust Engine Demo loaded\n",
+        "Rust Engine Demo first frame\n",
+        "Hello, player in slot 7 (user ID 42)!\n",
+        "Deferred command argument\n",
+        "Hello, player in slot 7 (user ID 42)!\n",
+        "Deferred command argument\n",
+        "New value\n",
+    };
+    assert(logged < (engine_demo ? 7 : 3));
+    assert(std::strcmp(message, engine_demo ? engine_output[logged] : hello_output[logged]) == 0);
     std::fputs(message, stdout);
     if (++logged == 2) {
-        // Reenter through a different user hook while the frame owns state.
+        // Both notifications are queued while the frame owns plugin state.
         globals.mres = MRES_UNSET;
         post_hooks.pfnClientPutInServer(&player);
-        assert(logged == 2);
-        assert(globals.mres == MRES_IGNORED);
+        assert(logged == 2 && globals.mres == MRES_IGNORED);
         globals.mres = MRES_SUPERCEDE;
+        if (!engine_demo) {
+            assert(!command && !registered_cvar);
+            return;
+        }
+        char transient[] = "Deferred command argument";
+        args[1] = transient;
+        assert(command);
+        command();
+        assert(logged == 2 && globals.mres == MRES_SUPERCEDE);
+        transient[0] = 'X';
+        args[1] = nullptr;
     }
 }
 
@@ -46,7 +132,9 @@ static Fn symbol(DLHANDLE module, const char *name) {
 }
 
 int main(int argc, char **argv) {
-    assert(argc == 2);
+    assert(argc == 3);
+    engine_demo = std::strcmp(argv[2], "engine-demo") == 0;
+    assert(engine_demo || std::strcmp(argv[2], "hello-world") == 0);
     DLHANDLE module = DLOPEN(argv[1]);
     if (!module) {
 #ifdef _WIN32
@@ -63,6 +151,16 @@ int main(int argc, char **argv) {
     enginefuncs_t engine{};
     engine.pfnServerPrint = server_print;
     engine.pfnIndexOfEdict = index_of_edict;
+    engine.pfnCVarRegister = register_cvar;
+    engine.pfnCVarGetPointer = find_cvar;
+    engine.pfnCVarGetString = get_cvar;
+    engine.pfnCVarSetString = set_cvar;
+    engine.pfnAddServerCommand = register_command;
+    engine.pfnCmd_Argc = command_argc;
+    engine.pfnCmd_Argv = command_argv;
+    engine.pfnPEntityOfEntIndex = entity_of_index;
+    engine.pfnGetPlayerUserId = player_userid;
+    engine.pfnGetPlayerAuthId = player_authid;
     give(&engine, nullptr);
 
     META_FUNCTIONS functions{};
@@ -76,7 +174,12 @@ int main(int argc, char **argv) {
     auto *saved_info = info;
     assert(query(META_INTERFACE_VERSION, &info, &utilities));
     assert(info == saved_info);
-    assert(std::strcmp(info->name, "Rust Hello World") == 0);
+    assert(std::strcmp(info->name, engine_demo ? "Rust Engine Demo" : "Rust Hello World") == 0);
+    assert(std::strcmp(info->logtag, engine_demo ? "RUSTENGINE" : "RUSTHELLO") == 0);
+    if (engine_demo) {
+        assert(std::strcmp(info->version, "0.1.0") == 0);
+        assert(std::strcmp(info->author, "metamod-rs contributors") == 0);
+    }
     assert(info->loadable == PT_STARTUP && info->unloadable == PT_NEVER);
     assert(!attach(PT_ANYTIME, &functions, &globals, &game));
     assert(attach(PT_STARTUP, &functions, &globals, &game));
@@ -109,14 +212,31 @@ int main(int argc, char **argv) {
         hooks.pfnStartFrame();
         assert(globals.mres == MRES_IGNORED);
     }
-    // The reentrant join was queued and delivered after the frame.
-    assert(logged == 3);
-    globals.mres = MRES_UNSET;
-    post_hooks.pfnClientPutInServer(nullptr);
-    assert(logged == 3 && globals.mres == MRES_IGNORED);
-    globals.mres = MRES_UNSET;
-    post_hooks.pfnClientPutInServer(&player);
-    assert(logged == 4 && globals.mres == MRES_IGNORED);
+    if (engine_demo) {
+        assert(logged == 4);
+        globals.mres = MRES_UNSET;
+        post_hooks.pfnClientPutInServer(nullptr);
+        assert(logged == 4 && globals.mres == MRES_IGNORED);
+        globals.mres = MRES_UNSET;
+        post_hooks.pfnClientPutInServer(&player);
+        assert(logged == 5 && globals.mres == MRES_IGNORED);
+        expire_player = true;
+        post_hooks.pfnClientPutInServer(&player);
+        assert(!expire_player && logged == 5);
+        reenter_argv = true;
+        command();
+        assert(!reenter_argv && logged == 5);
+        globals.mres = MRES_SUPERCEDE;
+        command();
+        assert(logged == 6 && globals.mres == MRES_SUPERCEDE);
+        args[1] = "New value";
+        command();
+        args[1] = nullptr;
+        assert(logged == 7 && std::strcmp(cvar_value, "New value") == 0);
+    } else {
+        assert(logged == 3 && !command && !registered_cvar);
+    }
+    const int expected_logs = engine_demo ? 7 : 3;
     globals.mres = MRES_UNSET;
     hooks.pfnClientDisconnect(&player);
     assert(globals.mres == MRES_IGNORED);
@@ -130,5 +250,9 @@ int main(int argc, char **argv) {
     assert(globals.mres == MRES_IGNORED);
     globals.mres = MRES_UNSET;
     post_hooks.pfnClientPutInServer(&player);
-    assert(logged == 4 && globals.mres == MRES_IGNORED);
+    assert(logged == expected_logs && globals.mres == MRES_IGNORED);
+    if (engine_demo) {
+        command();
+        assert(logged == expected_logs);
+    }
 }

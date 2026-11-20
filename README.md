@@ -53,6 +53,7 @@ and add `&mut self` and `&mut Context<'_>` to its callbacks. Existing
 | --- | --- |
 | `initialize` | Once per startup attach attempt, after construction. Return `false` to decline. |
 | `start_frame` | Before the game DLL's frame callback. |
+| `server_command` | When GoldSrc invokes a command registered by this plugin. |
 | `server_activate` | After the game DLL activates the map. |
 | `server_deactivate` | Before the game DLL deactivates the map. |
 | `player_join` | After the game DLL puts a player into the server. |
@@ -72,6 +73,44 @@ server thread. It covers players whose joins the plugin observed.
 
 Use the lifecycle hooks to clear map-specific state and
 `ctx.server().print(&str)` for console messages within a callback.
+
+## Engine services
+
+Use `ctx.server()` to register, read, and set CVars. For examples, see
+[engine-demo](examples/engine-demo/src/lib.rs), which declares its metadata
+explicitly in the attribute. At the server console with that demo installed,
+`rust_hello` prints the current `rust_hello_message` value and
+`rust_hello "New message"` updates it. `Server::cvar` returns an owned
+`CString`, with `Ok(None)` for an absent variable. Values supplied by Rust
+must fit in 1,023 bytes and may not contain NULs.
+
+Register names from an attached callback such as `start_frame` or
+`server_activate`. Use a plugin-specific prefix and register each name once
+per process. Names are case-insensitive and accept up to 63 ASCII letters,
+digits, underscores, or hyphens. The SDK prevents duplicate command names
+within a plugin and checks for existing CVars. GoldSrc's command
+registration returns no status and exposes neither a command lookup nor
+portable deregistration. Choose names that do not collide with engine or
+other plugin commands. Commands and CVars retain registration storage for
+the process lifetime. Registration is unavailable in `initialize`, where
+the plugin can still decline attachment. [Metamod registration code](https://github.com/alliedmodders/metamod-hl1/blob/18a10db686702e8ae9e0fcb5b5febf8881dc9c2d/metamod/reg_support.cpp) · [ReHLDS CVar implementation](https://github.com/rehlds/ReHLDS/blob/master/rehlds/engine/cvar.cpp)
+
+`Command::name()` identifies the registration. `arg(0)` is the first
+argument after the name. Arguments are copied as C strings before delivery,
+so deferred commands do not depend on the engine's transient argument buffer.
+Absent, oversized, or observably reentrant snapshots are skipped. The limit
+is 128 tokens including the name and 4,096 bytes including terminators.
+Native command callbacks share the dispatcher and its panic and event-budget
+rules. The portable API does not expose the command sender or authenticate
+the invocation.
+
+`ctx.player_info(id)` returns an owned snapshot for a currently observed
+session. It provides the GoldSrc user ID and authentication string where
+available. It returns `None` for a stale ID or a missing entity lookup and
+revalidates the session around engine calls. An authentication string can
+contain an engine marker such as a pending or bot value. Treat it as engine
+information, with session validity checked separately when using a saved
+snapshot.
 
 ## Build and install hello-world
 
@@ -128,6 +167,14 @@ server console. The plugin returns `MRES_IGNORED` each frame, leaving game-DLL
 dispatch to Metamod. To remove it, stop the server and remove the configuration
 line and shared library.
 
+### Engine demo
+
+Build the same way with `-p engine-demo`. Use `libengine_demo.so` on Linux or
+`engine_demo.dll` on Windows in the corresponding `plugins.ini` entry.
+`meta list` shows `Rust Engine Demo`, and the console controls become available
+on the first frame. The hello-world example uses Cargo metadata, while
+engine-demo shows explicit attribute arguments.
+
 ## Architecture and safety
 
 - `metamod-sys` uses libclang to parse a small C++ wrapper around the pinned
@@ -152,8 +199,8 @@ line and shared library.
   new-DLL table negotiates its own version and observes `GameShutdown`. All
   attached server-thread hooks set `MRES_IGNORED`, including skipped,
   deferred, disabled, and panicking invocations.
-- Nested frame callbacks are skipped. Nested map and player notifications
-  are queued in arrival order and delivered after the active Rust callback
+- Nested frame callbacks are skipped. Nested map, player, and command
+  notifications are queued in arrival order and delivered after the active Rust callback
   releases its mutable state borrow. Only owned event data enters the queue.
   The SDK updates session tracking immediately. A deferred callback can
   therefore observe an event for a session or map that has already ended.
@@ -205,12 +252,14 @@ PowerShell 7.4 or newer and LLVM's `bin` directory on PATH:
 pwsh -NoProfile -File verify/windows-i686.ps1
 ```
 
-The platform scripts check the x86 binary and its four named exports, compare
+The platform scripts check both example binaries and their four named exports,
+compare
 C++ and Rust sizes, alignments, and field offsets, and load the actual plugin
 with `dlopen` or `LoadLibrary`. The shared loader exercises version negotiation,
 metadata stability, startup-only attach, both hook tables, engine printing,
-player-slot translation, deferred cross-hook notifications, hook results,
-shutdown negotiation, and detach refusal. Rust tests cover identity
+player-slot translation and revalidation, CVar registration and updates,
+command argument copying and reentry, deferred notification ordering, hook
+results, shutdown negotiation, and detach refusal. Rust tests cover identity
 invalidation, failed initialization, panicking cleanup and destructors,
 off-thread dispatch, and callback disabling after panic.
 The Linux script accepts two optional paths for comparing against separate C++

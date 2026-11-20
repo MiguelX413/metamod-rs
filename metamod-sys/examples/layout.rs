@@ -115,6 +115,50 @@ fn main() {
         offset_of!(DllFunctions, pfnClientDisconnect)
     );
     println!(
+        "pfnCVarRegister {}",
+        offset_of!(EngineFunctions, pfnCVarRegister)
+    );
+    println!(
+        "pfnCVarGetPointer {}",
+        offset_of!(EngineFunctions, pfnCVarGetPointer)
+    );
+    println!(
+        "pfnCVarGetString {}",
+        offset_of!(EngineFunctions, pfnCVarGetString)
+    );
+    println!(
+        "pfnCVarSetString {}",
+        offset_of!(EngineFunctions, pfnCVarSetString)
+    );
+    println!(
+        "pfnAddServerCommand {}",
+        offset_of!(EngineFunctions, pfnAddServerCommand)
+    );
+    println!("pfnCmd_Argc {}", offset_of!(EngineFunctions, pfnCmd_Argc));
+    println!("pfnCmd_Argv {}", offset_of!(EngineFunctions, pfnCmd_Argv));
+    println!(
+        "pfnPEntityOfEntIndex {}",
+        offset_of!(EngineFunctions, pfnPEntityOfEntIndex)
+    );
+    println!(
+        "pfnGetPlayerUserId {}",
+        offset_of!(EngineFunctions, pfnGetPlayerUserId)
+    );
+    println!(
+        "pfnGetPlayerAuthId {}",
+        offset_of!(EngineFunctions, pfnGetPlayerAuthId)
+    );
+    println!(
+        "Cvar {} {}",
+        size_of::<raw::cvar_t>(),
+        align_of::<raw::cvar_t>()
+    );
+    println!("cvar_name {}", offset_of!(raw::cvar_t, name));
+    println!("cvar_string {}", offset_of!(raw::cvar_t, string));
+    println!("cvar_flags {}", offset_of!(raw::cvar_t, flags));
+    println!("cvar_value {}", offset_of!(raw::cvar_t, value));
+    println!("cvar_next {}", offset_of!(raw::cvar_t, next));
+    println!(
         "NewDllFunctions {} {}",
         size_of::<raw::NEW_DLL_FUNCTIONS>(),
         align_of::<raw::NEW_DLL_FUNCTIONS>()

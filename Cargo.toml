@@ -1,5 +1,11 @@
 [workspace]
-members = ["metamod-sys", "metamod", "metamod-macros", "examples/hello-world"]
+members = [
+    "metamod-sys",
+    "metamod",
+    "metamod-macros",
+    "examples/hello-world",
+    "examples/engine-demo",
+]
 resolver = "3"
 
 [workspace.package]
