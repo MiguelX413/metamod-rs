@@ -162,6 +162,20 @@ fn main() {
         "pfnAllowLagCompensation {}",
         offset_of!(DllFunctions, pfnAllowLagCompensation)
     );
+    println!("pfnTraceLine {}", offset_of!(EngineFunctions, pfnTraceLine));
+    println!("pfnTraceHull {}", offset_of!(EngineFunctions, pfnTraceHull));
+    println!("flFraction {}", offset_of!(raw::TraceResult, flFraction));
+    println!("vecEndPos {}", offset_of!(raw::TraceResult, vecEndPos));
+    println!(
+        "vecPlaneNormal {}",
+        offset_of!(raw::TraceResult, vecPlaneNormal)
+    );
+    println!("pHit {}", offset_of!(raw::TraceResult, pHit));
+    println!("iHitgroup {}", offset_of!(raw::TraceResult, iHitgroup));
+    println!("free {}", offset_of!(raw::edict_t, free));
+    println!("serialnumber {}", offset_of!(raw::edict_t, serialnumber));
+    println!("trace_size {}", size_of::<raw::TraceResult>());
+    println!("edict_size {}", size_of::<raw::edict_t>());
     println!(
         "NewDllFunctions {} {}",
         size_of::<raw::NEW_DLL_FUNCTIONS>(),

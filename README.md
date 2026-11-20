@@ -112,6 +112,21 @@ contain an engine marker such as a pending or bot value. Treat it as engine
 information, with session validity checked separately when using a saved
 snapshot.
 
+### Tracing and entity handles
+
+Use `ctx.server().trace_line(start, end, options)` or
+`trace_hull(start, end, Hull::Human, options)` on an active map. Inputs are
+finite world-space `[f32; 3]` coordinates. Results own the fraction, end
+position, solid flags, optional plane, hit group, and optional entity handle.
+The engine demo's `rust_trace` command shows both trace kinds.
+
+A trace hit's `EntityHandle` records the map epoch, engine index, and native
+edict serial. Validate saved handles with `ctx.is_entity_current(handle)`.
+Passing a stale handle as `TraceOptions::skip` fails before tracing. A map
+transition during a trace discards its output. Handles depend on the engine
+maintaining edict serials and Metamod forwarding map lifecycle hooks. A
+collision can have no usable handle, so inspect the fraction separately.
+
 ## Build and install hello-world
 
 ### Linux i686

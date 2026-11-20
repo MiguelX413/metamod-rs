@@ -53,12 +53,39 @@ impl Plugin for EngineDemo {
             if let Err(error) = server.register_command("rust_hello") {
                 server.print(&format!("Could not register rust_hello: {error}"));
             }
+            if let Err(error) = server.register_command("rust_trace") {
+                server.print(&format!("Could not register rust_trace: {error}"));
+            }
             server.print("Rust Engine Demo first frame");
         }
     }
 
     fn server_command(&mut self, ctx: &mut Context<'_>, command: &Command) {
         let server = ctx.server();
+        if command.name() == c"rust_trace" {
+            let start = [0.0, 0.0, 64.0];
+            let end = [0.0, 0.0, -64.0];
+            match server.trace_line(start, end, TraceOptions::default()) {
+                Ok(line) => {
+                    let hit = line.hit.filter(|hit| ctx.is_entity_current(*hit));
+                    server.print(&format!(
+                        "Line fraction: {}, hit: {:?}",
+                        line.fraction,
+                        hit.map(EntityHandle::index)
+                    ));
+                    let options = TraceOptions {
+                        monsters: TraceMonsters::Ignore,
+                        skip: hit,
+                    };
+                    match server.trace_hull(start, end, Hull::Human, options) {
+                        Ok(hull) => server.print(&format!("Hull fraction: {}", hull.fraction)),
+                        Err(error) => server.print(&format!("Hull trace failed: {error}")),
+                    }
+                }
+                Err(error) => server.print(&format!("Line trace failed: {error}")),
+            }
+            return;
+        }
         if let Some(argument) = command.arg(0) {
             let Ok(argument) = argument.to_str() else {
                 server.print("rust_hello expects a UTF-8 message");

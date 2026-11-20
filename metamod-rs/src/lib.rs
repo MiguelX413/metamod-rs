@@ -7,9 +7,13 @@ pub mod __ffi;
 mod engine;
 mod hooks;
 mod runtime;
+mod trace;
 
 pub use engine::{Command, EngineError, PlayerInfo};
 pub use hooks::{HookResult, PostHookResult};
+pub use trace::{
+    EntityHandle, Hull, TraceError, TraceMonsters, TraceOptions, TracePlane, TraceResult,
+};
 
 pub use runtime::{Context, InvalidPlayerSlot, PlayerId, PlayerSlot, Server};
 
@@ -20,8 +24,9 @@ pub mod prelude {
     #[cfg(feature = "macros")]
     pub use crate::metamod_plugin;
     pub use crate::{
-        Command, Context, EngineError, HookResult, Metadata, PlayerId, PlayerInfo, PlayerSlot,
-        Plugin, PostHookResult, Server, export_plugin,
+        Command, Context, EngineError, EntityHandle, HookResult, Hull, Metadata, PlayerId,
+        PlayerInfo, PlayerSlot, Plugin, PostHookResult, Server, TraceError, TraceMonsters,
+        TraceOptions, TracePlane, TraceResult, export_plugin,
     };
 }
 

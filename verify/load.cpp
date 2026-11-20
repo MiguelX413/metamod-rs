@@ -18,6 +18,8 @@ static bool engine_demo;
 static cvar_t *registered_cvar;
 static char cvar_value[1024];
 static void (*command)();
+static void (*trace_command)();
+static bool trace_transition;
 static const char *args[] = {"RUST_HELLO", nullptr};
 static bool reenter_argv;
 static bool expire_player;
@@ -45,8 +47,14 @@ static void set_cvar(const char *name, const char *value) {
 }
 
 static void register_command(const char *name, void (*callback)()) {
-    assert(!command && std::strcmp(name, "rust_hello") == 0 && callback);
-    command = callback;
+    assert(callback);
+    if (std::strcmp(name, "rust_trace") == 0) {
+        assert(!trace_command);
+        trace_command = callback;
+    } else {
+        assert(!command && std::strcmp(name, "rust_hello") == 0);
+        command = callback;
+    }
 }
 
 static int command_argc() {
@@ -81,6 +89,23 @@ static const char *player_authid(edict_t *edict) {
     return "STEAM_ID_TEST";
 }
 
+static void trace_line(const float *start, const float *end, int mode, edict_t *skip, TraceResult *out) {
+    assert(start[2] == 64 && end[2] == -64 && mode == dont_ignore_monsters && !skip);
+    out->flFraction = 0.5f;
+    out->vecEndPos.z = 0;
+    out->vecPlaneNormal.z = 1;
+    out->pHit = &player;
+    if (trace_transition) {
+        hooks.pfnServerDeactivate();
+    }
+}
+
+static void trace_hull(const float *start, const float *end, int mode, int hull, edict_t *skip, TraceResult *out) {
+    assert(start[2] == 64 && end[2] == -64 && mode == ignore_monsters && hull == human_hull);
+    assert(skip == &player);
+    out->flFraction = 1.0f;
+}
+
 static int index_of_edict(const edict_t *edict) {
     assert(edict == &player);
     return 7;
@@ -100,8 +125,11 @@ static void server_print(const char *message) {
         "Hello, player in slot 7 (user ID 42)!\n",
         "Deferred command argument\n",
         "New value\n",
+        "Line fraction: 0.5, hit: Some(7)\n",
+        "Hull fraction: 1\n",
+        "Line trace failed: the map changed during the trace\n",
     };
-    assert(logged < (engine_demo ? 7 : 3));
+    assert(logged < (engine_demo ? 10 : 3));
     assert(std::strcmp(message, engine_demo ? engine_output[logged] : hello_output[logged]) == 0);
     std::fputs(message, stdout);
     if (++logged == 2) {
@@ -150,6 +178,8 @@ int main(int argc, char **argv) {
     auto detach = symbol<META_DETACH_FN>(module, "Meta_Detach");
     enginefuncs_t engine{};
     engine.pfnServerPrint = server_print;
+    engine.pfnTraceLine = trace_line;
+    engine.pfnTraceHull = trace_hull;
     engine.pfnIndexOfEdict = index_of_edict;
     engine.pfnCVarRegister = register_cvar;
     engine.pfnCVarGetPointer = find_cvar;
@@ -246,10 +276,17 @@ int main(int argc, char **argv) {
         command();
         args[1] = nullptr;
         assert(logged == 7 && std::strcmp(cvar_value, "New value") == 0);
+        assert(trace_command);
+        args[0] = "rust_trace";
+        trace_command();
+        assert(logged == 9);
+        trace_transition = true;
+        trace_command();
+        assert(logged == 10);
     } else {
         assert(logged == 3 && !command && !registered_cvar);
     }
-    const int expected_logs = engine_demo ? 7 : 3;
+    const int expected_logs = engine_demo ? 10 : 3;
     globals.mres = MRES_UNSET;
     hooks.pfnClientDisconnect(&player);
     assert(globals.mres == MRES_IGNORED);

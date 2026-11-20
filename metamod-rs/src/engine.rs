@@ -5,7 +5,7 @@ use metamod_sys::{
         MetamodAddServerCommand, MetamodCVarGetPointer, MetamodCVarGetString, MetamodCVarRegister,
         MetamodCVarSetString, MetamodCmd_Argc, MetamodCmd_Argv, MetamodGetPlayerAuthId,
         MetamodGetPlayerUserId, MetamodIndexOfEdict, MetamodPEntityOfEntIndex, MetamodServerPrint,
-        cvar_t,
+        MetamodTraceHull, MetamodTraceLine, cvar_t,
     },
 };
 use std::{
@@ -45,6 +45,8 @@ engine_callbacks! {
     entity: MetamodPEntityOfEntIndex = pfnPEntityOfEntIndex,
     userid: MetamodGetPlayerUserId = pfnGetPlayerUserId,
     auth_id: MetamodGetPlayerAuthId = pfnGetPlayerAuthId,
+    trace_line: MetamodTraceLine = pfnTraceLine,
+    trace_hull: MetamodTraceHull = pfnTraceHull,
 }
 
 pub(crate) type CommandCallback = unsafe extern "C" fn();

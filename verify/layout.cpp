@@ -63,6 +63,17 @@ int main() {
     std::printf("cvar_value %zu\n", offsetof(cvar_t, value));
     std::printf("cvar_next %zu\n", offsetof(cvar_t, next));
     std::printf("pfnAllowLagCompensation %zu\n", offsetof(DLL_FUNCTIONS, pfnAllowLagCompensation));
+    std::printf("pfnTraceLine %zu\n", offsetof(enginefuncs_t, pfnTraceLine));
+    std::printf("pfnTraceHull %zu\n", offsetof(enginefuncs_t, pfnTraceHull));
+    std::printf("flFraction %zu\n", offsetof(TraceResult, flFraction));
+    std::printf("vecEndPos %zu\n", offsetof(TraceResult, vecEndPos));
+    std::printf("vecPlaneNormal %zu\n", offsetof(TraceResult, vecPlaneNormal));
+    std::printf("pHit %zu\n", offsetof(TraceResult, pHit));
+    std::printf("iHitgroup %zu\n", offsetof(TraceResult, iHitgroup));
+    std::printf("free %zu\n", offsetof(edict_t, free));
+    std::printf("serialnumber %zu\n", offsetof(edict_t, serialnumber));
+    std::printf("trace_size %zu\n", sizeof(TraceResult));
+    std::printf("edict_size %zu\n", sizeof(edict_t));
     std::printf("NewDllFunctions %zu %zu\n", sizeof(NEW_DLL_FUNCTIONS), alignof(NEW_DLL_FUNCTIONS));
     std::printf("pfnGameShutdown %zu\n", offsetof(NEW_DLL_FUNCTIONS, pfnGameShutdown));
     std::printf("new_dll_version %d\n", NEW_DLL_FUNCTIONS_VERSION);

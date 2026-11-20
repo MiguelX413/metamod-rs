@@ -616,15 +616,24 @@ unsafe extern "C" fn start_frame<P: Plugin>() {
 }
 
 unsafe extern "C" fn begin_map(_: *mut edict_t, _: c_int, _: c_int) {
-    hook(reset_players);
+    hook(|| {
+        crate::trace::invalidate_map();
+        reset_players();
+    });
 }
 
 unsafe extern "C" fn server_activate<P: Plugin>(_: *mut edict_t, _: c_int, _: c_int) {
-    hook(|| submit::<P>(Event::Activate));
+    hook(|| {
+        if !SHUTDOWN.get() {
+            crate::trace::activate_map();
+        }
+        submit::<P>(Event::Activate);
+    });
 }
 
 unsafe extern "C" fn server_deactivate<P: Plugin>() {
     hook(|| {
+        crate::trace::invalidate_map();
         reset_players();
         submit::<P>(Event::Deactivate);
     });
@@ -653,6 +662,7 @@ unsafe extern "C" fn player_disconnect<P: Plugin>(edict: *mut edict_t) {
 unsafe extern "C" fn game_shutdown<P: Plugin>() {
     hook(|| {
         if !SHUTDOWN.replace(true) {
+            crate::trace::invalidate_map();
             reset_players();
             EVENTS.with(|events| events.borrow_mut().pending.clear());
             drain::<P>();
