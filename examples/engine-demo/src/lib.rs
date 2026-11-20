@@ -182,8 +182,10 @@ impl Plugin for EngineDemo {
         }
         let slot = player.slot();
         let server = ctx.server();
-        if let Some(info) = info
-            && let Some(user_id) = info.user_id
+        if let Some(PlayerInfo {
+            user_id: Some(user_id),
+            ..
+        }) = info
         {
             server.print(&c_string(format!(
                 "Hello, player in slot {slot} (user ID {user_id})!"

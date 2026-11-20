@@ -115,8 +115,10 @@ rules. The portable API does not expose the command sender or authenticate
 the invocation.
 
 `ctx.player_info(id)` returns an owned snapshot for a currently observed
-session. It provides the GoldSrc user ID and authentication string where
-available. It returns `None` for a stale ID or a missing entity lookup and
+session. Its `Option<PlayerUserId>` contains the positive server-assigned
+GoldSrc user ID when available. `PlayerUserId` is distinct from a reusable
+`PlayerSlot` and a map-scoped `PlayerId`. The snapshot also contains the
+authentication string when available. It returns `None` for a stale ID or a missing entity lookup and
 revalidates the session around engine calls. An authentication string can
 contain an engine marker such as a pending or bot value. Treat it as engine
 information, with session validity checked separately when using a saved

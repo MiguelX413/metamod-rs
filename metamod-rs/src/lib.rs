@@ -16,7 +16,7 @@ pub use trace::{
     TraceError, TraceMonsters, TraceOptions, TracePlane, TraceResult,
 };
 
-pub use runtime::{Context, InvalidPlayerSlot, PlayerId, PlayerSlot, Server};
+pub use runtime::{Context, InvalidPlayerSlot, PlayerId, PlayerSlot, PlayerUserId, Server};
 
 #[cfg(feature = "macros")]
 pub use metamod_macros::metamod_plugin;
@@ -27,8 +27,8 @@ pub mod prelude {
     pub use crate::{
         Command, Context, EngineError, EntityError, EntityHandle, EntityInfo, EntityKeyValues,
         EntityKind, EntitySpatial, HookResult, Hull, KeyValueEvent, Metadata, PlayerId, PlayerInfo,
-        PlayerSlot, Plugin, PostHookResult, Server, TraceError, TraceMonsters, TraceOptions,
-        TracePlane, TraceResult, export_plugin,
+        PlayerSlot, PlayerUserId, Plugin, PostHookResult, Server, TraceError, TraceMonsters,
+        TraceOptions, TracePlane, TraceResult, export_plugin,
     };
 }
 

@@ -99,9 +99,11 @@ static const char *string_from_index(int index) {
     return value;
 }
 
+static int engine_user_id = 42;
+
 static int player_userid(edict_t *edict) {
     assert(edict == &player);
-    return 42;
+    return engine_user_id;
 }
 
 static const char *player_authid(edict_t *edict) {
@@ -155,7 +157,7 @@ static void server_print(const char *message) {
         "Rust Engine Demo first frame\n",
         "Hello, player in slot 7 (user ID 42)!\n",
         "Deferred command argument\377\n",
-        "Hello, player in slot 7 (user ID 42)!\n",
+        "Hello, player in slot 7!\n",
         "Deferred command argument\377\n",
         "New value\n",
         "Visible entities: 2\n",
@@ -347,6 +349,7 @@ int main(int argc, char **argv) {
         post_hooks.pfnClientPutInServer(nullptr);
         assert(logged == 4 && globals.mres == MRES_IGNORED);
         globals.mres = MRES_UNSET;
+        engine_user_id = -1;
         post_hooks.pfnClientPutInServer(&player);
         assert(logged == 5 && globals.mres == MRES_IGNORED);
         expire_player = true;

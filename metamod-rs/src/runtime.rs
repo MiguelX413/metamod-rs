@@ -58,6 +58,32 @@ impl From<PlayerSlot> for i32 {
     }
 }
 
+/// A positive, server-assigned GoldSrc user ID. This is separate from an
+/// edict slot or a map-scoped player session handle.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PlayerUserId(NonZeroI32);
+
+impl PlayerUserId {
+    /// Construct an ID from GoldSrc's integer value. Zero and negatives
+    /// represent unavailable or invalid IDs.
+    pub const fn new(value: i32) -> Option<Self> {
+        match NonZeroI32::new(value) {
+            Some(value) if value.get() > 0 => Some(Self(value)),
+            _ => None,
+        }
+    }
+
+    pub const fn get(self) -> i32 {
+        self.0.get()
+    }
+}
+
+impl fmt::Display for PlayerUserId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.get(), f)
+    }
+}
+
 /// A player session observed by this plugin, scoped to a map.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PlayerId {

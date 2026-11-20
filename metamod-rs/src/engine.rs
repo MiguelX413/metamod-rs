@@ -1,4 +1,4 @@
-use crate::{__ffi, Context, PlayerId, Server};
+use crate::{__ffi, Context, PlayerId, PlayerUserId, Server};
 use metamod_sys::{
     EngineFunctions,
     raw::{
@@ -91,7 +91,7 @@ impl Command {
 #[derive(Clone, Debug)]
 pub struct PlayerInfo {
     pub id: PlayerId,
-    pub user_id: Option<i32>,
+    pub user_id: Option<PlayerUserId>,
     pub auth_id: Option<CString>,
 }
 
@@ -387,7 +387,7 @@ impl Context<'_> {
         let user_id = if let Some(userid) = engine.userid {
             // SAFETY: The edict was just obtained and its session revalidated.
             let uid = unsafe { userid(lookup()?) };
-            (uid > 0).then_some(uid)
+            PlayerUserId::new(uid)
         } else {
             None
         };
@@ -416,6 +416,18 @@ impl Context<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn player_user_id_accepts_only_positive_engine_values() {
+        for invalid in [i32::MIN, -1, 0] {
+            assert_eq!(PlayerUserId::new(invalid), None);
+        }
+        for valid in [1, 42, i32::MAX] {
+            let id = PlayerUserId::new(valid).unwrap();
+            assert_eq!(id.get(), valid);
+            assert_eq!(id.to_string(), valid.to_string());
+        }
+    }
 
     #[test]
     fn bounded_string_reads_stop_at_nul_or_budget() {
