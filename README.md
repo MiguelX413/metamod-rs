@@ -151,7 +151,10 @@ collision can have no usable handle, so inspect the fraction separately.
 
 On an active map, use `ctx.entity_at(index)` for a single lookup or
 `ctx.entities()` for an index-ordered scan of the engine-visible edict
-table. The SDK captures `globalvars_t.maxEntities` at map activation.
+table. The SDK captures `globalvars_t.maxEntities` at map activation and
+accepts capacities from 1 through 65,536. An absent or invalid capacity
+disables index lookup, handle resolution, and discovery for that map.
+Traces can still report geometry without resolving a hit handle.
 Scanning that capacity can discover allocations created later in the map. Vacant, out-of-range, and
 engine-filtered indices have no handle. A map change during traversal
 returns an error. Discovery requires the engine globals and edict lookup
@@ -248,8 +251,8 @@ engine-demo shows explicit attribute arguments.
   and mutably borrows it for each callback. State survives map changes.
   See [hello-world](examples/hello-world/src/lib.rs) for registration and
   callback examples.
-- The loader supplies valid C arguments and calls `GiveFnptrsToDll`, query,
-  attach, and hooks on the server thread. It keeps Metamod globals live during
+- The first valid `GiveFnptrsToDll` handoff binds the SDK to that server
+  thread. The loader then calls query, attach, and hooks on the same thread. It keeps Metamod globals live during
   hooks and engine globals live until shutdown. The SDK copies the function
   pointers it uses and reads the edict capacity at post-activation. It copies
   native spatial fields after revalidating the handle. Metadata and its strings have module
@@ -316,7 +319,10 @@ The SDK leaves PE ordinals to the linker.
   before discarding the arena. The SDK checks player sessions, edict serials,
   and map epochs around native calls. It copies strings before making
   another native call. Native return buffers must remain readable until
-  that copy completes.
+  that copy completes. Alignment checks can reject malformed inputs, but
+  cannot establish that an aligned pointer refers to readable memory. In
+  particular, the host must return a current-map edict or null from lookup
+  and tracing, and keep an edict slot allocated while its map is active.
 - Metamod provides aligned initialized ABI data, valid callback functions,
   and writable hook-result globals through the return of each active
   hook. This includes outer hooks when shutdown is observed reentrantly.

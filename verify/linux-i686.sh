@@ -15,7 +15,7 @@ cargo build --locked --target i686-unknown-linux-gnu -p metamod-sys --example la
 includes=(-I"$metamod/metamod" -I"$hlsdk/dlls" -I"$hlsdk/engine"
           -I"$hlsdk/common" -I"$hlsdk/pm_shared" -I"$hlsdk/public")
 "${CXX:-c++}" -m32 -std=c++11 -DLINUX -DGNUC "${includes[@]}" verify/layout.cpp -o "$work/layout"
-"${CXX:-c++}" -m32 -std=c++11 -DLINUX -DGNUC "${includes[@]}" verify/load.cpp -ldl -o "$work/load"
+"${CXX:-c++}" -m32 -std=c++11 -DLINUX -DGNUC "${includes[@]}" verify/load.cpp -pthread -ldl -o "$work/load"
 "$work/layout" > "$work/c-layout"
 "$CARGO_TARGET_DIR/i686-unknown-linux-gnu/debug/examples/layout" > "$work/rust-layout"
 diff -u "$work/c-layout" "$work/rust-layout"

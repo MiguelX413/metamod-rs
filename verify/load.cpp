@@ -1,6 +1,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 #include <extdll.h>
 #include <meta_api.h>
 #include <h_export.h>
@@ -248,11 +249,20 @@ int main(int argc, char **argv) {
     player.v.classname = 2;
     player.v.targetname = static_cast<string_t>(-3);
     player.v.flags = FL_CLIENT | FL_FAKECLIENT;
-    give(&engine, &engine_globals);
-
     META_FUNCTIONS functions{};
     gamedll_funcs_t game{};
     mutil_funcs_t utilities{};
+    assert(!query(META_INTERFACE_VERSION, &info, &utilities));
+    give(&engine, &engine_globals);
+    std::thread foreign_loader([&] {
+        enginefuncs_t other_engine{};
+        give(&other_engine, nullptr);
+        plugin_info_t *foreign_info = nullptr;
+        assert(!query(META_INTERFACE_VERSION, &foreign_info, &utilities));
+        assert(!foreign_info);
+        assert(!attach(PT_STARTUP, &functions, &globals, &game));
+    });
+    foreign_loader.join();
     assert(!attach(PT_STARTUP, &functions, &globals, &game));
     assert(!query("5:12", &info, &utilities));
     assert(!query("6:13", &info, &utilities));
@@ -322,6 +332,10 @@ int main(int argc, char **argv) {
         globals.orig_ret = nullptr;
         globals.status = MRES_UNSET;
     }
+    globals.mres = MRES_SUPERCEDE;
+    std::thread foreign_hook([] { hooks.pfnStartFrame(); });
+    foreign_hook.join();
+    assert(globals.mres == MRES_SUPERCEDE && logged == 1);
     for (int frame = 0; frame < 2; ++frame) {
         globals.mres = MRES_UNSET;
         hooks.pfnStartFrame();

@@ -8,6 +8,9 @@ use metamod_sys::{
 };
 use std::{cell::Cell, ffi::CString, fmt, ptr};
 
+// SDK work limit, independent of the lower capacity a host may advertise.
+const MAX_EDICT_CAPACITY: i32 = 65_536;
+
 thread_local! {
     // Keep the counter across deactivation so a new map cannot revive handles.
     static GLOBALS: Cell<*mut EngineGlobals> = const { Cell::new(ptr::null_mut()) };
@@ -28,6 +31,7 @@ pub(crate) fn invalidate_map() {
 }
 
 pub(crate) fn activate_map() {
+    invalidate_map();
     let (generation, _) = MAP.get();
     if let Some(generation) = generation.checked_add(1) {
         MAP.set((generation, true));
@@ -35,7 +39,10 @@ pub(crate) fn activate_map() {
         if !globals.is_null() {
             // SAFETY: The loader retains initialized globals and this is the
             // owner-thread post-activation hook for the current map.
-            LIMIT.set(unsafe { ptr::addr_of!((*globals).maxEntities).read() });
+            let capacity = unsafe { ptr::addr_of!((*globals).maxEntities).read() };
+            if (1..=MAX_EDICT_CAPACITY).contains(&capacity) {
+                LIMIT.set(capacity);
+            }
         }
     } else {
         invalidate_map();
@@ -88,8 +95,7 @@ impl EntityHandle {
 }
 
 fn valid_index(index: i32) -> bool {
-    let limit = LIMIT.get();
-    index >= 0 && (limit <= 0 || index < limit)
+    (0..LIMIT.get()).contains(&index)
 }
 
 /// # Safety
@@ -106,9 +112,11 @@ pub(crate) unsafe fn tracked_entity(engine: Engine, index: i32) -> Option<Entity
         .flatten()
 }
 
-/// A non-null edict must be readable until another native call or map change.
+/// # Safety
+/// For a non-null aligned edict, the host must keep its free and serial
+/// fields initialized and readable for this immediate owner-thread read.
 unsafe fn live_serial(edict: *mut edict_t) -> Option<i32> {
-    if edict.is_null() {
+    if edict.is_null() || !edict.is_aligned() {
         return None;
     }
     // SAFETY: These integer fields are initialized in the engine's edict.
@@ -196,6 +204,9 @@ fn find_entity(
 ) -> Result<Option<EntityHandle>, EntityError> {
     if active_map() != Some(map) {
         return Err(EntityError::MapChanged);
+    }
+    if !valid_index(index) {
+        return Ok(None);
     }
     let edict = lookup(index);
     if active_map() != Some(map) {
@@ -503,11 +514,14 @@ fn trace(
 
 fn capture_hit(engine: Engine, map: u64, edict: *mut edict_t) -> Option<EntityHandle> {
     let index_of = engine.index?;
+    if LIMIT.get() == 0 {
+        return None;
+    }
     // SAFETY: The trace returned a hit edict in the still-active map or null.
     let serial = unsafe { live_serial(edict) }?;
     // SAFETY: No native call intervened since the trace returned this edict.
     let index = unsafe { index_of(edict) };
-    if index < 0 {
+    if active_map() != Some(map) || !valid_index(index) {
         return None;
     }
     let handle = EntityHandle { index, serial, map };
@@ -540,6 +554,12 @@ mod tests {
             entity: Some(entity),
             ..Default::default()
         };
+        let mut globals = EngineGlobals {
+            maxEntities: 8,
+            ..Default::default()
+        };
+        // SAFETY: The fixture is live until the test clears the pointer.
+        unsafe { set_globals(&raw mut globals) };
         activate_map();
         let handle = EntityHandle {
             index: 7,
@@ -561,6 +581,34 @@ mod tests {
         activate_map();
         assert!(handle.resolve(engine).is_none());
         EDICT.set(ptr::null_mut());
+        unsafe { set_globals(ptr::null_mut()) };
+    }
+
+    #[test]
+    fn invalid_capacities_revoke_the_index_range_without_native_lookup() {
+        let mut globals = EngineGlobals::default();
+        let globals_ptr = &raw mut globals;
+        // SAFETY: The fixture stays alive until the pointer is cleared.
+        unsafe { set_globals(globals_ptr) };
+        for capacity in [0, -1, MAX_EDICT_CAPACITY + 1, i32::MAX] {
+            // SAFETY: The fixture is owned by this test thread.
+            unsafe { (*globals_ptr).maxEntities = 8 };
+            activate_map();
+            assert!(valid_index(7));
+            assert!(!valid_index(8));
+            unsafe { (*globals_ptr).maxEntities = capacity };
+            activate_map();
+            assert!(!valid_index(0));
+            assert!(matches!(discovery(), Err(EntityError::Unavailable)));
+            let map = active_map().unwrap();
+            assert_eq!(
+                find_entity(|_| panic!("invalid index reached FFI"), 0, map),
+                Ok(None)
+            );
+        }
+        unsafe { set_globals(ptr::null_mut()) };
+        activate_map();
+        assert!(!valid_index(0));
     }
 
     #[test]

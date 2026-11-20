@@ -125,13 +125,17 @@ pub(crate) fn player_at(slot: PlayerSlot) -> Option<PlayerId> {
 }
 
 /// # Safety
-/// A non-null table must have readable engine callback slots. They must
-/// remain callable on this thread through the lifetime of the attachment.
-/// Non-null globals must remain readable on the owner thread until shutdown.
+/// A non-null table must have aligned, readable, initialized callback
+/// slots. The first valid handoff binds the attachment to this server
+/// thread. The callbacks must remain callable on it through shutdown.
+/// Non-null globals must be aligned and readable through shutdown.
 pub unsafe fn give_engine(table: *mut EngineFunctions, globals: *mut EngineGlobals) {
     let _ = contained(|| {
-        if wrong_thread()
-            || table.is_null()
+        if table.is_null() || !table.is_aligned() || !globals.is_aligned() {
+            return;
+        }
+        let current = thread::current().id();
+        if OWNER.get_or_init(|| current) != &current
             || !STATE.with(|state| matches!(state.get(), State::Unqueried))
         {
             return;
@@ -198,26 +202,30 @@ fn compatible(version: &CStr) -> bool {
 /// The version must be readable up to its NUL or 64 bytes. The utility
 /// slots must be aligned and initialized, the output aligned and writable,
 /// and the metadata must remain live for the module lifetime. Metamod
-/// must invoke query and later callbacks on the server thread.
+/// must invoke query after the engine handoff and on the same server thread.
 pub unsafe fn query(
     version: *const c_char,
     out: *mut *mut PluginInfo,
     utilities: *mut MetaUtilities,
     id: *mut PluginInfo,
 ) -> c_int {
-    if wrong_thread() || version.is_null() || out.is_null() || utilities.is_null() || id.is_null() {
-        return 0;
-    }
     contained(|| {
+        if OWNER.get() != Some(&thread::current().id())
+            || version.is_null()
+            || out.is_null()
+            || !out.is_aligned()
+            || utilities.is_null()
+            || !utilities.is_aligned()
+            || id.is_null()
+            || !id.is_aligned()
+        {
+            return 0;
+        }
         // SAFETY: Validity follows from the loader contract above.
         let Some(version) = (unsafe { engine::copy_string(version, 64) }) else {
             return 0;
         };
         if !compatible(&version) {
-            return 0;
-        }
-        let current = thread::current().id();
-        if OWNER.get_or_init(|| current) != &current {
             return 0;
         }
         STATE.with(|state| {
@@ -244,7 +252,13 @@ pub unsafe fn attach<P: Plugin>(
     table: *mut MetaFunctions,
     globals: *mut MetaGlobals,
 ) -> c_int {
-    if wrong_thread() || now != PT_STARTUP || table.is_null() || globals.is_null() {
+    if wrong_thread()
+        || now != PT_STARTUP
+        || table.is_null()
+        || globals.is_null()
+        || !table.is_aligned()
+        || !globals.is_aligned()
+    {
         return 0;
     }
     contained(|| {
@@ -300,7 +314,12 @@ fn make_context<P: Plugin>(scope: &(), services: Services) -> Context<'_> {
 }
 
 unsafe fn write_hooks<T>(table: *mut T, version: *mut c_int, expected: c_int, hooks: T) -> c_int {
-    if wrong_thread() || table.is_null() || version.is_null() {
+    if wrong_thread()
+        || table.is_null()
+        || version.is_null()
+        || !table.is_aligned()
+        || !version.is_aligned()
+    {
         return 0;
     }
     // SAFETY: Metamod provides valid version storage and a writable table.
@@ -528,7 +547,8 @@ unsafe extern "C" fn lag_post<P: Plugin>() -> c_int {
         // original GameDLL result even if Metamod supplies a fallback slot.
         let original = unsafe {
             let slot = (*globals).orig_ret.cast::<c_int>();
-            ((*globals).status != MRES_SUPERCEDE && !slot.is_null()).then(|| slot.read() != 0)
+            ((*globals).status != MRES_SUPERCEDE && !slot.is_null() && slot.is_aligned())
+                .then(|| slot.read() != 0)
         };
         match plugin.allow_lag_compensation_post(context, original) {
             PostHookResult::Ignored => HookResult::Ignored,
@@ -628,7 +648,7 @@ unsafe extern "C" fn server_command<P: Plugin>() {
 
 unsafe extern "C" fn key_value<P: Plugin>(_: *mut edict_t, data: *mut raw::KeyValueData) {
     hook(|| {
-        if data.is_null() || !registration_available() {
+        if data.is_null() || !data.is_aligned() || !registration_available() {
             return;
         }
         // SAFETY: Metamod supplies initialized input fields and readable
