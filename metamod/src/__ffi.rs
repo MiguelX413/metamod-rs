@@ -669,9 +669,11 @@ mod tests {
     #[test]
     fn public_player_slot_constructor_checks_the_engine_index_range() {
         assert_eq!(PlayerSlot::new(0), None);
-        let slot = PlayerSlot::new(7).unwrap();
-        assert_eq!(slot.get(), 7);
-        assert_eq!(PlayerSlot::new(slot.get()), Some(slot));
+        const SLOT: PlayerSlot = PlayerSlot::new(7).unwrap();
+        const INDEX: i32 = SLOT.get();
+        assert_eq!(INDEX, 7);
+        assert_eq!(SLOT.to_string(), "7");
+        assert_eq!(PlayerSlot::new(INDEX), Some(SLOT));
         assert_eq!(PlayerSlot::new(i32::MAX).unwrap().get(), i32::MAX);
         assert_eq!(PlayerSlot::new(-1), None);
         assert_eq!(PlayerSlot::new(i32::MIN), None);

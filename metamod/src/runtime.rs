@@ -13,16 +13,22 @@ pub struct PlayerSlot(NonZeroI32);
 impl PlayerSlot {
     /// Construct a slot from GoldSrc's signed, one-based index. Zero and
     /// negative indices return `None`. Use `Context::player_at` to check occupancy.
-    pub fn new(index: i32) -> Option<Self> {
-        if index <= 0 {
-            return None;
+    pub const fn new(index: i32) -> Option<Self> {
+        match NonZeroI32::new(index) {
+            Some(index) if index.get() > 0 => Some(Self(index)),
+            _ => None,
         }
-        NonZeroI32::new(index).map(Self)
     }
 
     /// Return the positive, one-based GoldSrc slot index.
-    pub fn get(self) -> i32 {
+    pub const fn get(self) -> i32 {
         self.0.get()
+    }
+}
+
+impl fmt::Display for PlayerSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.get(), f)
     }
 }
 
