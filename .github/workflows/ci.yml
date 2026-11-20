@@ -15,6 +15,11 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+          submodules: true
+      - name: Install libclang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev
       - name: Install stable Rust
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - name: Check formatting
@@ -33,22 +38,13 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+          submodules: true
       - name: Install 32-bit build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y g++-multilib
+          sudo apt-get install -y clang libclang-dev g++-multilib
           rustup toolchain install stable --profile minimal --target i686-unknown-linux-gnu
-      - name: Fetch reference headers
-        working-directory: ${{ runner.temp }}
-        run: |
-          fetch_reference() {
-            git init "$1"
-            git -C "$1" fetch --depth=1 "$2" "$3"
-            git -C "$1" checkout --detach FETCH_HEAD
-          }
-          fetch_reference metamod-hl1 https://github.com/alliedmodders/metamod-hl1.git 18a10db686702e8ae9e0fcb5b5febf8881dc9c2d
-          fetch_reference hlsdk https://github.com/alliedmodders/hlsdk.git a0edb7792a96998d349325bebab8ea41ec5cb239
       - name: Verify shared library against upstream headers
         env:
           RUSTUP_TOOLCHAIN: stable
-        run: bash verify/linux-i686.sh "$RUNNER_TEMP/metamod-hl1" "$RUNNER_TEMP/hlsdk"
+        run: bash verify/linux-i686.sh

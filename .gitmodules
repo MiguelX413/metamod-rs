@@ -1,0 +1,6 @@
+[submodule "upstream/metamod-hl1"]
+	path = upstream/metamod-hl1
+	url = https://github.com/alliedmodders/metamod-hl1.git
+[submodule "upstream/hlsdk"]
+	path = upstream/hlsdk
+	url = https://github.com/alliedmodders/hlsdk.git

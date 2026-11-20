@@ -4,18 +4,13 @@ use std::{ffi::CStr, marker::PhantomData};
 /// Access to plugin services during a callback on the GoldSrc server thread.
 pub struct Context<'callback> {
     id: *mut PluginInfo,
-    log: Option<Log>,
-    console: Option<Log>,
+    log: Log,
+    console: Log,
     scope: PhantomData<&'callback ()>,
 }
 
 impl<'callback> Context<'callback> {
-    pub(crate) fn new(
-        _: &'callback (),
-        id: *mut PluginInfo,
-        log: Option<Log>,
-        console: Option<Log>,
-    ) -> Self {
+    pub(crate) fn new(_: &'callback (), id: *mut PluginInfo, log: Log, console: Log) -> Self {
         Self {
             id,
             log,
@@ -34,7 +29,7 @@ impl<'callback> Context<'callback> {
         self.write(self.console, message);
     }
 
-    fn write(&self, callback: Option<Log>, message: &CStr) {
+    fn write(&self, callback: Log, message: &CStr) {
         if let Some(log) = callback {
             // SAFETY: These are the loader's callback and plugin ID. The
             // message lives through the synchronous varargs call.

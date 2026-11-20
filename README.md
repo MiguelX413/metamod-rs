@@ -2,14 +2,19 @@
 
 A minimal Rust SDK for native GoldSrc Metamod plugins. The first milestone
 supports startup initialization, server logging, and an observational
-`StartFrame` pre-hook. It has no external Cargo dependencies.
+`StartFrame` pre-hook. Bindgen is a build dependency of `metamod-sys`.
 
 ## Build and install hello-world
 
-Use Rust with edition 2024 support, the i686 GNU/Linux Rust target, and a C
-linker with 32-bit libc development files.
+Initialize the pinned Metamod and HLSDK submodules before building. Use Rust
+with edition 2024 support, Clang and host libclang, and C/C++ development
+headers for the target. For Linux i686, also install 32-bit linker and libc
+development files. On Ubuntu, the CI workflow installs `clang`,
+`libclang-dev`, and `g++-multilib`. Set `LIBCLANG_PATH` if bindgen cannot
+find your host libclang.
 
 ```sh
+git submodule update --init
 rustup target add i686-unknown-linux-gnu
 cargo build --locked --release --target i686-unknown-linux-gnu -p hello-world
 ```
@@ -32,10 +37,12 @@ line and shared library.
 
 ## Architecture and safety
 
-- `metamod-sys` describes the required C ABI with `repr(C)`, integer enum
-  values, and nullable C function pointers. Unused callback slots are private
-  and retain their positions in the tables. Engine and new-DLL types that only
-  appear behind pointers are opaque.
+- `metamod-sys` uses libclang to parse a small C++ wrapper around the pinned
+  upstream headers for Cargo's target. Bindgen generates the allowlisted
+  interface and its dependent types in Cargo's `OUT_DIR`. The raw module
+  exposes the upstream field names, integer enums, and nullable C function
+  pointers. The export macro checks its entry points against the generated
+  function pointer types at compile time.
 - `metamod` provides the safe `Plugin` trait and callback-scoped `Context`.
   Declare static C-string metadata and invoke `export_plugin!(YourPlugin)`
   once in a `cdylib`. See [hello-world](examples/hello-world/src/lib.rs).
@@ -60,19 +67,18 @@ line and shared library.
 - Plugins load at startup and refuse detach. Forced unloading can bypass the
   plugin's refusal in Metamod, so keep the module resident until process exit.
 
-Linux i686 is the verified deployment target. Win32 uses the same C layouts
-and cdecl callbacks, with the system calling convention for
-`GiveFnptrsToDll` (stdcall on Win32). PE export names and the
-`GiveFnptrsToDll` ordinal convention used by upstream module definitions
-still need target-specific linker verification before Windows deployment.
+Linux i686 is the verified deployment target. On Win32 the export macro uses
+stdcall for `GiveFnptrsToDll` and cdecl for the Metamod entry points. Bindgen
+needs Windows SDK and C++ headers for a Windows target. Windows binding
+generation, PE export names and ordinals, and loading remain unverified.
 
 ## Verify
 
-With the upstream Metamod and HLSDK checkouts and a working 32-bit C++
-toolchain and runtime:
+With the initialized submodules and a working 32-bit C++ toolchain and
+runtime:
 
 ```sh
-verify/linux-i686.sh /path/to/metamod-hl1 /path/to/hlsdk
+verify/linux-i686.sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
@@ -82,14 +88,17 @@ compares C++ and Rust sizes, alignments, and field offsets, and opens the
 actual shared library with `dlopen`. It exercises version negotiation,
 metadata stability, startup-only attach, nested frame dispatch, hook results,
 and detach refusal. The Rust test also checks recursion and panic containment.
+The script accepts two optional paths for comparing against separate C++
+reference checkouts. Binding generation always uses the submodules.
 
 Validated against alliedmodders/metamod-hl1 at
 `18a10db686702e8ae9e0fcb5b5febf8881dc9c2d` and alliedmodders/hlsdk at
-`a0edb7792a96998d349325bebab8ea41ec5cb239`. No isolated GoldSrc server was
-available during development. A Ricochet startup on Metamod-P 1.21p109 confirmed both
-console messages, including a single `StartFrame` message, and `meta list`
-showed the plugin in `RUN`. Player gameplay and a later map transition
-remain unverified.
+`a0edb7792a96998d349325bebab8ea41ec5cb239`. Before the bindgen migration,
+a Ricochet startup on Metamod-P 1.21p109 confirmed both console messages,
+including a single `StartFrame` message, and `meta list` showed the plugin in
+`RUN`. The migrated plugin has been exercised in the loader harness. A new
+server smoke test, player gameplay, and a later map transition remain
+unverified.
 
 Before publishing the SDK, run the example on isolated servers with both
 Metamod loaders, verify Win32 exports and loading, and establish the supported
@@ -98,12 +107,19 @@ their ABI and lifetime contracts are verified.
 
 ## Licensing and references
 
-The workspace retains its [AGPL-3.0-only license](LICENSE). The Rust bindings
-are a handwritten description of the binary interface and its required
-sizes, signatures, slot positions, and numeric values. Upstream headers are
-external verification inputs. The workspace ships no generated bindings,
-vendored headers, or upstream implementation code. Cargo publication is
-disabled for this milestone.
+The workspace retains its [AGPL-3.0-only license](LICENSE) for SDK-authored
+code. The repository records Git links to the upstream revisions. Header
+notices and licenses remain in their respective submodules. Bindgen is
+BSD-3-Clause licensed and generates declarations locally. The generated files
+stay in the build directory, and Cargo publication remains disabled.
+
+Submodules preserve upstream provenance. They do not resolve redistribution
+rights for archives that include the headers, generated Rust declarations,
+or binaries that incorporate them. Review the upstream terms and the actual
+release contents before publishing any such artifact. In particular, review
+Valve's redistribution restrictions and notice requirements, and whether
+GPL obligations apply to output derived from Metamod headers. Metamod's
+linking exception addresses linking with Valve's engine and mods.
 
 - Official Metamod header material by Will Day, copyright © 2001–2003, is
   GPL-2.0-or-later with an upstream exception for linking with Valve’s

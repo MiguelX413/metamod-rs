@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-metamod=$(realpath "${1:?path to alliedmodders/metamod-hl1 checkout}")
-hlsdk=$(realpath "${2:?path to alliedmodders/hlsdk checkout}")
-cd "$(dirname "$0")/.."
+repo=$(cd "$(dirname "$0")/.." && pwd)
+metamod=$(realpath "${1:-$repo/upstream/metamod-hl1}")
+hlsdk=$(realpath "${2:-$repo/upstream/hlsdk}")
+cd "$repo"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 

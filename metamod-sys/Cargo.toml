@@ -10,3 +10,6 @@ repository.workspace = true
 keywords = ["goldsrc", "metamod", "half-life", "ffi"]
 categories = ["external-ffi-bindings", "game-development"]
 publish = false
+
+[build-dependencies]
+bindgen = { version = "0.72.1", default-features = false, features = ["runtime"] }

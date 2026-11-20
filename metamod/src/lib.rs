@@ -37,8 +37,17 @@ macro_rules! export_plugin {
 
         static mut __METAMOD_INFO: __metamod_ffi::PluginInfo = __metamod_ffi::info::<$plugin>();
 
+        #[cfg(all(windows, target_arch = "x86"))]
         #[unsafe(no_mangle)]
-        unsafe extern "system" fn GiveFnptrsToDll(
+        unsafe extern "stdcall" fn GiveFnptrsToDll(
+            _: *mut __metamod_ffi::EngineFunctions,
+            _: *mut __metamod_ffi::EngineGlobals,
+        ) {
+        }
+
+        #[cfg(not(all(windows, target_arch = "x86")))]
+        #[unsafe(no_mangle)]
+        unsafe extern "C" fn GiveFnptrsToDll(
             _: *mut __metamod_ffi::EngineFunctions,
             _: *mut __metamod_ffi::EngineGlobals,
         ) {
@@ -72,5 +81,11 @@ macro_rules! export_plugin {
         ) -> ::core::ffi::c_int {
             0
         }
+
+        // Check exported signatures against bindgen's upstream declarations.
+        const _: __metamod_ffi::raw::GIVE_ENGINE_FUNCTIONS_FN = Some(GiveFnptrsToDll);
+        const _: __metamod_ffi::raw::META_QUERY_FN = Some(Meta_Query);
+        const _: __metamod_ffi::raw::META_ATTACH_FN = Some(Meta_Attach);
+        const _: __metamod_ffi::raw::META_DETACH_FN = Some(Meta_Detach);
     };
 }
