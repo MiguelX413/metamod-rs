@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -296,6 +297,17 @@ static void server_print(const char *message) {
     }
 }
 
+static void metamod_console(plid_t plugin, const char *format, ...) {
+    assert(engine_demo && plugin == info && std::strcmp(format, "%s") == 0);
+    va_list args;
+    va_start(args, format);
+    const char *message = va_arg(args, const char *);
+    va_end(args);
+    assert(std::strcmp(message, "Rust Engine Demo loaded") == 0);
+    // Metamod's console utility appends the newline.
+    server_print("Rust Engine Demo loaded\n");
+}
+
 template <typename Fn>
 static Fn symbol(DLHANDLE module, const char *name) {
     auto function = reinterpret_cast<Fn>(DLSYM(module, name));
@@ -409,6 +421,7 @@ int main(int argc, char **argv) {
     META_FUNCTIONS functions{};
     gamedll_funcs_t game{};
     mutil_funcs_t utilities{};
+    utilities.pfnLogConsole = metamod_console;
     assert(!query(META_INTERFACE_VERSION, &info, &utilities));
     give(&engine, &engine_globals);
     std::thread foreign_loader([&] {

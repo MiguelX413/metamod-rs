@@ -49,7 +49,8 @@ impl Plugin for EngineDemo {
     }
 
     fn initialize(&mut self, ctx: &mut Context<'_>) -> bool {
-        ctx.server().print(c"Rust Engine Demo loaded\n");
+        ctx.metamod()
+            .print_console_trunc(c"Rust Engine Demo loaded");
         true
     }
 

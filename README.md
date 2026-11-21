@@ -87,7 +87,16 @@ Use the lifecycle hooks to clear map-specific state and
 `ctx.server().print(&CStr)` for console messages within a callback. Use a
 `c"..."` literal or construct a `CString` for dynamic text. The SDK sends
 the original bytes. Include a newline for line output. For Metamod's
-line-oriented console utility, use `ctx.print_console(message)`.
+line-oriented utilities, use `ctx.metamod().print_console_trunc(c"Ready")`
+or `ctx.metamod().log_trunc(c"Ready")`. Both accept any `&CStr` and truncate
+at 1,021 payload bytes, excluding the NUL terminator. Truncation can split
+a UTF-8 sequence.
+
+If you need to reject oversized messages, convert with
+`let message: &MetamodMessage = c"Ready".try_into()?;` and pass the validated
+borrow to `ctx.metamod().print_console(message)` or `ctx.metamod().log(message)`.
+The existing `Context::print_console` and `Context::log` methods forward to
+those truncating methods.
 
 ## Engine services
 

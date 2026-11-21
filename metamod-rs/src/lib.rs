@@ -29,8 +29,8 @@ pub use trace::{
 };
 
 pub use runtime::{
-    Context, InvalidPlayerSlot, InvalidPlayerUserId, ParsePlayerNumberError, PlayerId, PlayerSlot,
-    PlayerUserId, Server,
+    Context, InvalidPlayerSlot, InvalidPlayerUserId, MetaMod, MetamodMessage,
+    MetamodMessageTooLong, ParsePlayerNumberError, PlayerId, PlayerSlot, PlayerUserId, Server,
 };
 
 #[cfg(feature = "macros")]
@@ -42,9 +42,10 @@ pub mod prelude {
     pub use crate::{
         Command, ConsoleName, Context, CvarValue, EngineError, EntityError, EntityHandle,
         EntityInfo, EntityKeyValues, EntityKind, EntitySpatial, HookResult, Hull, KeyValueEvent,
-        Metadata, OwnedConsoleName, PlayerId, PlayerInfo, PlayerSlot, PlayerUserId, Plugin,
-        PostHookResult, Server, TraceError, TraceMonsters, TraceOptions, TracePlane, TraceResult,
-        TraceSegment, console_name, cvar_value, export_plugin,
+        MetaMod, Metadata, MetamodMessage, MetamodMessageTooLong, OwnedConsoleName, PlayerId,
+        PlayerInfo, PlayerSlot, PlayerUserId, Plugin, PostHookResult, Server, TraceError,
+        TraceMonsters, TraceOptions, TracePlane, TraceResult, TraceSegment, console_name,
+        cvar_value, export_plugin,
     };
 }
 
