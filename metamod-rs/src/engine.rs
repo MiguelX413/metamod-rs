@@ -9,6 +9,7 @@ use metamod_sys::{
     },
 };
 use std::{
+    borrow::Cow,
     cell::{Cell, RefCell},
     collections::HashSet,
     ffi::{CStr, CString, c_char},
@@ -128,7 +129,7 @@ impl std::error::Error for EngineError {}
 
 /// A validated, lowercase name shared by server commands and CVars.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct ConsoleName(CString);
+pub struct ConsoleName(Cow<'static, CStr>);
 
 impl ConsoleName {
     /// Borrow the normalized native name.
@@ -137,22 +138,65 @@ impl ConsoleName {
     }
 }
 
+// Share validation and normalization between runtime and const construction.
+const fn valid_name(value: &[u8]) -> bool {
+    if value.is_empty() || value.len() > 63 {
+        return false;
+    }
+    let mut i = 0;
+    while i < value.len() {
+        if !value[i].is_ascii_alphanumeric() && !matches!(value[i], b'_' | b'-') {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+impl ConsoleName {
+    #[doc(hidden)]
+    pub const fn __normalize<const N: usize>(value: &CStr) -> [u8; N] {
+        let bytes = value.to_bytes();
+        assert!(valid_name(bytes), "invalid console name");
+        assert!(N == bytes.len() + 1, "incorrect console name buffer size");
+        let mut normalized = [0; N];
+        let mut i = 0;
+        while i < bytes.len() {
+            normalized[i] = bytes[i].to_ascii_lowercase();
+            i += 1;
+        }
+        normalized
+    }
+
+    #[doc(hidden)]
+    pub const fn __from_static_bytes(bytes: &'static [u8]) -> Self {
+        let Ok(name) = CStr::from_bytes_with_nul(bytes) else {
+            panic!("invalid console name terminator");
+        };
+        let value = name.to_bytes();
+        assert!(valid_name(value), "invalid console name");
+        let mut i = 0;
+        while i < value.len() {
+            assert!(
+                !value[i].is_ascii_uppercase(),
+                "console name must be lowercase"
+            );
+            i += 1;
+        }
+        Self(Cow::Borrowed(name))
+    }
+}
+
 impl TryFrom<&CStr> for ConsoleName {
     type Error = EngineError;
 
     fn try_from(value: &CStr) -> Result<Self, Self::Error> {
         let value = value.to_bytes();
-        if value.is_empty()
-            || value.len() > 63
-            || !value
-                .iter()
-                .copied()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-        {
+        if !valid_name(value) {
             return Err(EngineError::InvalidName);
         }
         CString::new(value.to_ascii_lowercase())
-            .map(Self)
+            .map(|name| Self(Cow::Owned(name)))
             .map_err(|_| EngineError::InvalidName)
     }
 }
@@ -162,6 +206,14 @@ impl TryFrom<&CStr> for ConsoleName {
 pub struct CvarValue<'a>(&'a CStr);
 
 impl<'a> CvarValue<'a> {
+    /// Check the CVar byte limit without allocating.
+    pub const fn new(value: &'a CStr) -> Result<Self, EngineError> {
+        if value.to_bytes().len() > 1023 {
+            return Err(EngineError::InvalidValue);
+        }
+        Ok(Self(value))
+    }
+
     /// Return the original C string without copying or decoding it.
     pub const fn as_c_str(self) -> &'a CStr {
         self.0
@@ -172,10 +224,7 @@ impl<'a> TryFrom<&'a CStr> for CvarValue<'a> {
     type Error = EngineError;
 
     fn try_from(value: &'a CStr) -> Result<Self, Self::Error> {
-        if value.to_bytes().len() > 1023 {
-            return Err(EngineError::InvalidValue);
-        }
-        Ok(Self(value))
+        Self::new(value)
     }
 }
 
@@ -517,7 +566,7 @@ mod tests {
     #[test]
     fn command_exposes_its_normalized_console_name() {
         let command = Command {
-            name: ConsoleName::try_from(c"RUST_HELLO").unwrap(),
+            name: crate::console_name!(c"RUST_HELLO"),
             args: Vec::new(),
         };
         let name: &ConsoleName = command.name();
@@ -526,7 +575,7 @@ mod tests {
 
     #[test]
     fn cvar_values_borrow_native_bytes_and_enforce_the_inclusive_limit() {
-        assert_eq!(CvarValue::try_from(c"").unwrap().as_c_str(), c"");
+        assert_eq!(crate::cvar_value!(c"").as_c_str(), c"");
         let maximum = CString::new(vec![0xff_u8; 1023]).unwrap();
         let value = CvarValue::try_from(maximum.as_c_str()).unwrap();
         assert_eq!(value.as_c_str().as_ptr(), maximum.as_ptr());
@@ -540,13 +589,13 @@ mod tests {
 
     #[test]
     fn irreversible_registrations_share_a_bounded_name_budget() {
-        assert!(reserve_name(&ConsoleName::try_from(c"Test").unwrap(), true).is_ok());
+        assert!(reserve_name(&crate::console_name!(c"Test"), true).is_ok());
         assert_eq!(
-            reserve_name(&ConsoleName::try_from(c"test").unwrap(), true),
+            reserve_name(&crate::console_name!(c"test"), true),
             Err(EngineError::RegistrationRejected)
         );
         assert_eq!(
-            reserve_name(&ConsoleName::try_from(c"TEST").unwrap(), false),
+            reserve_name(&crate::console_name!(c"TEST"), false),
             Err(EngineError::AlreadyRegistered)
         );
         for index in 1..MAX_CONSOLE_REGISTRATIONS {
@@ -562,7 +611,7 @@ mod tests {
             );
         }
         assert_eq!(
-            reserve_name(&ConsoleName::try_from(c"one_more").unwrap(), true),
+            reserve_name(&crate::console_name!(c"one_more"), true),
             Err(EngineError::RegistrationLimit)
         );
     }

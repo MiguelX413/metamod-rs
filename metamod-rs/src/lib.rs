@@ -31,7 +31,62 @@ pub mod prelude {
         Command, ConsoleName, Context, CvarValue, EngineError, EntityError, EntityHandle,
         EntityInfo, EntityKeyValues, EntityKind, EntitySpatial, HookResult, Hull, KeyValueEvent,
         Metadata, PlayerId, PlayerInfo, PlayerSlot, PlayerUserId, Plugin, PostHookResult, Server,
-        TraceError, TraceMonsters, TraceOptions, TracePlane, TraceResult, export_plugin,
+        TraceError, TraceMonsters, TraceOptions, TracePlane, TraceResult, console_name, cvar_value,
+        export_plugin,
+    };
+}
+
+/// Validate and lowercase a constant C string as a console name.
+///
+/// ```
+/// use metamod_rs::{ConsoleName, console_name};
+/// static NAME: ConsoleName = console_name!(c"MY_PLUGIN");
+/// assert_eq!(NAME.as_c_str(), c"my_plugin");
+/// ```
+///
+/// ```compile_fail
+/// use metamod_rs::console_name;
+/// let _ = console_name!(c"bad name");
+/// ```
+#[macro_export]
+macro_rules! console_name {
+    ($name:expr $(,)?) => {
+        const {
+            const INPUT: &::core::ffi::CStr = $name;
+            const LEN: usize = INPUT.to_bytes_with_nul().len();
+            const BYTES: [u8; LEN] = $crate::ConsoleName::__normalize::<LEN>(INPUT);
+            $crate::ConsoleName::__from_static_bytes(&BYTES)
+        }
+    };
+}
+
+/// Validate a constant C string against the CVar byte limit.
+///
+/// ```
+/// use metamod_rs::{CvarValue, cvar_value};
+/// const VALUE: CvarValue<'static> = cvar_value!(c"\xff");
+/// assert_eq!(VALUE.as_c_str().to_bytes(), &[0xff]);
+/// ```
+///
+/// ```compile_fail
+/// use metamod_rs::cvar_value;
+/// const BYTES: [u8; 1025] = {
+///     let mut bytes = [b'x'; 1025];
+///     bytes[1024] = 0;
+///     bytes
+/// };
+/// const VALUE: &core::ffi::CStr = core::ffi::CStr::from_bytes_with_nul(&BYTES).unwrap();
+/// let _ = cvar_value!(VALUE);
+/// ```
+#[macro_export]
+macro_rules! cvar_value {
+    ($value:expr $(,)?) => {
+        const {
+            match $crate::CvarValue::new($value) {
+                Ok(value) => value,
+                Err(_) => panic!("CVar value exceeds 1023 bytes"),
+            }
+        }
     };
 }
 

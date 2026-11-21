@@ -1,8 +1,7 @@
 use metamod_rs::prelude::*;
-use std::{ffi::CString, sync::LazyLock};
+use std::ffi::CString;
 
-static MESSAGE: LazyLock<ConsoleName> =
-    LazyLock::new(|| ConsoleName::try_from(c"RUST_HELLO_MESSAGE").expect("valid demo CVar name"));
+static MESSAGE: ConsoleName = console_name!(c"RUST_HELLO_MESSAGE");
 
 fn c_string(bytes: impl Into<Vec<u8>>) -> CString {
     CString::new(bytes).expect("demo text contains no NUL bytes")
@@ -61,8 +60,8 @@ impl Plugin for EngineDemo {
             match server.cvar(&MESSAGE) {
                 Ok(Some(_)) => {}
                 Ok(None) => {
-                    if let Err(error) = CvarValue::try_from(c"Hello from Rust!")
-                        .and_then(|value| server.register_cvar(&MESSAGE, value))
+                    if let Err(error) =
+                        server.register_cvar(&MESSAGE, cvar_value!(c"Hello from Rust!"))
                     {
                         server.print(&c_string(format!(
                             "Could not register rust_hello_message: {error}\n"
@@ -73,23 +72,17 @@ impl Plugin for EngineDemo {
                     "Could not read rust_hello_message: {error}\n"
                 ))),
             }
-            if let Err(error) =
-                ConsoleName::try_from(c"rust_hello").and_then(|name| server.register_command(&name))
-            {
+            if let Err(error) = server.register_command(&console_name!(c"rust_hello")) {
                 server.print(&c_string(format!(
                     "Could not register rust_hello: {error}\n"
                 )));
             }
-            if let Err(error) =
-                ConsoleName::try_from(c"rust_trace").and_then(|name| server.register_command(&name))
-            {
+            if let Err(error) = server.register_command(&console_name!(c"rust_trace")) {
                 server.print(&c_string(format!(
                     "Could not register rust_trace: {error}\n"
                 )));
             }
-            if let Err(error) = ConsoleName::try_from(c"rust_entities")
-                .and_then(|name| server.register_command(&name))
-            {
+            if let Err(error) = server.register_command(&console_name!(c"rust_entities")) {
                 server.print(&c_string(format!(
                     "Could not register rust_entities: {error}\n"
                 )));

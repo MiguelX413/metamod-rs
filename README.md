@@ -101,11 +101,23 @@ must fit in 1,023 bytes excluding the terminator. Construct a borrowed
 `CvarValue` with `CvarValue::try_from(value)` before calling
 `set_cvar` or `register_cvar`. Validation needs no allocation and preserves
 the original bytes. Registration copies the value into retained storage.
-Construct a `ConsoleName` with `ConsoleName::try_from(c"my_plugin_setting")`.
+Construct a `ConsoleName` with `ConsoleName::try_from(raw_name)` for runtime input.
 Command registration and CVar operations borrow that validated name.
 Construction checks the syntax and normalizes ASCII case once. Reuse the
 name for subsequent reads and writes.
 Values and console output can contain non-UTF-8 bytes.
+
+For literals, `console_name!` and `cvar_value!` validate at compile time:
+
+```rust
+use metamod_rs::prelude::*;
+
+static NAME: ConsoleName = console_name!(c"MY_PLUGIN_SETTING");
+const DEFAULT: CvarValue<'static> = cvar_value!(c"1");
+```
+
+The name macro stores normalized lowercase bytes without allocating.
+Use `TryFrom<&CStr>` for runtime input.
 
 Register names from an attached callback such as `start_frame` or
 `server_activate`. Use a plugin-specific prefix and register each name once
