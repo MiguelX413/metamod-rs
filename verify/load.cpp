@@ -303,6 +303,13 @@ static Fn symbol(DLHANDLE module, const char *name) {
     return function;
 }
 
+// All arguments are fixed fixture literals.
+static void native_pass(const char *test, const char *evidence) {
+    std::printf("MM_AUDIT_NATIVE {\"schema_version\":1,\"test\":\"%s\",\"result\":\"PASS\",\"observed\":\"%s\"}\n",
+                test, evidence);
+    std::fflush(stdout);
+}
+
 static void exercise_audit() {
     assert(hooks.pfnKeyValue && hooks.pfnAllowLagCompensation && post_hooks.pfnAllowLagCompensation);
     KeyValueData data{nullptr, "classname", "worldspawn", 17};
@@ -313,6 +320,7 @@ static void exercise_audit() {
     audit_reentry = true;
     hooks.pfnStartFrame();
     assert(!audit_reentry && audit_status && audit_run && audit_report);
+    assert(audit_output.find("\"test\":\"player.join.v1\",\"result\":\"PASS\"") != std::string::npos);
     args[0] = "mm_audit_status";
     audit_status();
     hooks.pfnClientDisconnect(&player);
@@ -348,6 +356,9 @@ static void exercise_audit() {
     const auto before = audit_logs;
     audit_report();
     assert(audit_logs == before);
+    native_pass("native.hook.result.v1", "Ignored pre and post decisions preserved fixture hook semantics with an original return slot");
+    native_pass("native.dispatch.reentrant.v1", "Nested join entered from server print and was delivered after the frame callback");
+    native_pass("native.shutdown.dispatch_revoked.v1", "A command after GameShutdown did not dispatch to the audit plugin");
 }
 
 int main(int argc, char **argv) {
@@ -621,5 +632,8 @@ int main(int argc, char **argv) {
     if (engine_demo) {
         command();
         assert(logged == expected_logs);
+        native_pass("native.command.snapshot_limits.v1", "Nested argv read and unterminated bounded argument were discarded");
+        native_pass("native.entity.reentrant_map.v1", "Nested transitions invalidated discovery string lookup and trace results");
+        native_pass("native.shutdown.reentrant_trace.v1", "Nested shutdown suppressed hit lookup and further command dispatch");
     }
 }
