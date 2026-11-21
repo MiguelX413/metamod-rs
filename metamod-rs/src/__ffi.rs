@@ -85,6 +85,7 @@ thread_local! {
     });
     static RUNNING: Cell<bool> = const { Cell::new(false) };
     static INDEX_LOOKUP: Cell<Option<bool>> = const { Cell::new(None) };
+    static ACTIVATING: Cell<bool> = const { Cell::new(false) };
     static SHUTDOWN: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -257,8 +258,9 @@ pub unsafe fn query(
 
 /// # Safety
 /// Called on the server thread that queried the plugin. Metamod must supply
-/// an aligned writable table and keep the aligned globals valid until each
-/// hook returns, including when a nested hook signals shutdown.
+/// an aligned writable table that stays valid through initialization and
+/// any native reentry it causes. Metamod must keep the aligned globals valid
+/// until each hook returns, including when a nested hook signals shutdown.
 pub unsafe fn attach<P: Plugin>(
     now: LoadTime,
     table: *mut MetaFunctions,
@@ -644,7 +646,7 @@ unsafe fn player_slot(edict: *mut edict_t) -> Option<PlayerSlot> {
     INDEX_LOOKUP.set(Some(false));
     // SAFETY: Metamod supplied a live edict for this synchronous lookup.
     let index = unsafe { index(edict) };
-    if INDEX_LOOKUP.replace(None) == Some(false) {
+    if INDEX_LOOKUP.replace(None) == Some(false) && crate::trace::within_client_capacity(index) {
         PlayerSlot::new(index)
     } else {
         None
@@ -708,6 +710,7 @@ unsafe extern "C" fn start_frame<P: Plugin>() {
 
 unsafe extern "C" fn begin_map(_: *mut edict_t, _: c_int, _: c_int) {
     hook(|| {
+        ACTIVATING.set(!SHUTDOWN.get());
         crate::trace::invalidate_map();
         reset_players();
     });
@@ -715,18 +718,21 @@ unsafe extern "C" fn begin_map(_: *mut edict_t, _: c_int, _: c_int) {
 
 unsafe extern "C" fn server_activate<P: Plugin>(_: *mut edict_t, _: c_int, _: c_int) {
     hook(|| {
-        if !SHUTDOWN.get() {
+        // A nested deactivation can finish before the outer activation's
+        // post hook runs. That post hook must not republish the edict arena.
+        if ACTIVATING.replace(false) && !SHUTDOWN.get() {
             if INDEX_LOOKUP.get().is_some() {
                 INDEX_LOOKUP.set(Some(true));
             }
             crate::trace::activate_map();
+            submit::<P>(Event::Activate);
         }
-        submit::<P>(Event::Activate);
     });
 }
 
 unsafe extern "C" fn server_deactivate<P: Plugin>() {
     hook(|| {
+        ACTIVATING.set(false);
         crate::trace::invalidate_map();
         reset_players();
         submit::<P>(Event::Deactivate);
@@ -767,6 +773,7 @@ unsafe extern "C" fn player_disconnect<P: Plugin>(edict: *mut edict_t) {
 unsafe extern "C" fn game_shutdown<P: Plugin>() {
     hook(|| {
         if !SHUTDOWN.replace(true) {
+            ACTIVATING.set(false);
             crate::trace::invalidate_map();
             reset_players();
             EVENTS.with(|events| events.borrow_mut().pending.clear());
@@ -972,7 +979,10 @@ mod tests {
     fn dispatch_budget_stops_a_feedback_loop_with_a_small_queue() {
         unsafe extern "C" fn activate() {
             // SAFETY: The helper runs this on the attached thread.
-            unsafe { server_activate::<BudgetPlugin>(ptr::null_mut(), 0, 0) };
+            unsafe {
+                begin_map(ptr::null_mut(), 0, 0);
+                server_activate::<BudgetPlugin>(ptr::null_mut(), 0, 0);
+            }
         }
         exercise_dispatch_budget(activate, (MAX_EVENTS_PER_DISPATCH, 0));
     }
@@ -1022,6 +1032,7 @@ mod tests {
                 // SAFETY: These synthetic hooks run on the attached thread.
                 unsafe {
                     start_frame::<Self>();
+                    begin_map(ptr::null_mut(), 0, 0);
                     server_activate::<Self>(ptr::null_mut(), 0, 0);
                     server_deactivate::<Self>();
                 }
@@ -1059,6 +1070,7 @@ mod tests {
             assert_eq!(globals.mres, MRES_IGNORED);
             assert_eq!(globals.prev_mres, MRES_HANDLED);
             globals.mres = MRES_UNSET;
+            begin_map(ptr::null_mut(), 0, 0);
             server_activate::<TestPlugin>(ptr::null_mut(), 0, 0);
         }
         assert_eq!(globals.mres, MRES_IGNORED);

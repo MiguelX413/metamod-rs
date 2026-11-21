@@ -110,6 +110,12 @@ fn valid_index(index: i32) -> bool {
     (0..LIMIT.get()).contains(&index)
 }
 
+pub(crate) fn within_client_capacity(index: i32) -> bool {
+    // Early player hooks can precede the post-activation capacity snapshot.
+    let capacity = CLIENT_LIMIT.get();
+    capacity == 0 || index <= capacity
+}
+
 pub(crate) fn tracked_entity(index: i32, serial: i32) -> Option<EntityHandle> {
     let map = active_map()?;
     (1..=CLIENT_LIMIT.get())

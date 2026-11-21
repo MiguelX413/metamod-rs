@@ -29,6 +29,7 @@ static void (*command)();
 static void (*trace_command)();
 static void (*entities_command)();
 static bool trace_transition;
+static bool expect_inactive_trace;
 static bool shutdown_from_trace;
 static int trace_index_lookups;
 static const char *args[] = {"RUST_HELLO", nullptr};
@@ -37,7 +38,7 @@ static bool expire_player;
 static bool reuse_player_during_lookup;
 static bool expect_reused_player_fallback;
 static int userid_reads;
-enum class JoinIndexChange { none, reuse, free, disconnect, map };
+enum class JoinIndexChange { none, reuse, free, disconnect, map, out_of_range };
 static JoinIndexChange join_index_change;
 
 static cvar_t *find_cvar(const char *name) {
@@ -143,6 +144,7 @@ static const char *player_authid(edict_t *edict) {
 }
 
 static void trace_line(const float *start, const float *end, int mode, edict_t *skip, TraceResult *out) {
+    assert(!expect_inactive_trace);
     assert(start[2] == 64 && end[2] == -64 && mode == dont_ignore_monsters && !skip);
     out->flFraction = 0.5f;
     out->vecEndPos.z = 0;
@@ -177,12 +179,18 @@ static int index_of_edict(const edict_t *edict) {
         hooks.pfnServerActivate(nullptr, 0, 0);
         post_hooks.pfnServerActivate(nullptr, 0, 0);
         break;
+    case JoinIndexChange::out_of_range: return 8;
     case JoinIndexChange::none: break;
     }
     return 7;
 }
 
 static void server_print(const char *message) {
+    if (expect_inactive_trace) {
+        assert(std::strcmp(message, "Line trace failed: tracing requires an active map and engine callbacks\n") == 0);
+        expect_inactive_trace = false;
+        return;
+    }
     if (expect_reused_player_fallback) {
         assert(!reuse_player_during_lookup);
         assert(std::strcmp(message, "Hello, player in slot 7!\n") == 0);
@@ -409,7 +417,7 @@ int main(int argc, char **argv) {
         // Keep the fixture allocation live, including during map transitions.
         const JoinIndexChange rejected_joins[] = {
             JoinIndexChange::reuse, JoinIndexChange::free,
-            JoinIndexChange::disconnect, JoinIndexChange::map,
+            JoinIndexChange::disconnect, JoinIndexChange::map, JoinIndexChange::out_of_range,
         };
         for (auto change : rejected_joins) {
             const int reads_before = userid_reads;
@@ -452,6 +460,7 @@ int main(int argc, char **argv) {
         discovery_transition = true;
         entities_command();
         discovery_transition = false;
+        hooks.pfnServerActivate(nullptr, 0, 0);
         post_hooks.pfnServerActivate(nullptr, 0, 0);
         assert(logged == 12);
         args[1] = "7";
@@ -460,6 +469,7 @@ int main(int argc, char **argv) {
         string_transition = false;
         args[1] = nullptr;
         assert(logged == 13);
+        hooks.pfnServerActivate(nullptr, 0, 0);
         post_hooks.pfnServerActivate(nullptr, 0, 0);
         assert(trace_command);
         args[0] = "rust_trace";
@@ -468,6 +478,13 @@ int main(int argc, char **argv) {
         trace_transition = true;
         trace_command();
         assert(logged == 16);
+        // Model a deactivation reentered between the pre and post phases.
+        hooks.pfnServerActivate(nullptr, 0, 0);
+        hooks.pfnServerDeactivate();
+        post_hooks.pfnServerActivate(nullptr, 0, 0);
+        expect_inactive_trace = true;
+        trace_command();
+        assert(!expect_inactive_trace && logged == 16);
     } else {
         assert(logged == 3 && !command && !registered_cvar);
     }

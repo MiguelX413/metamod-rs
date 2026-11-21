@@ -275,6 +275,17 @@ Build the same way with `-p engine-demo`. Use `libengine_demo.so` on Linux or
 on the first frame. The hello-world example uses Cargo metadata, while
 engine-demo shows explicit attribute arguments.
 
+For a live smoke test, use a disposable server on each platform and record
+the engine and Metamod versions. Start with the demo configured at startup,
+confirm `meta list` reports it running, then run `rust_hello`,
+`rust_hello "test value"`, `rust_entities 0`, and `rust_trace` from the
+server console. Connect, disconnect, and reconnect a client. Check that the
+demo reports the new join and that the server continues serving frames.
+Use `changelevel` to load another installed map and repeat the commands.
+Stop the process normally with `quit`. These steps exercise a real host's
+loader, callbacks, and native buffers. They cannot establish shutdown
+delivery or pointer validity in every host and GameDLL combination.
+
 ## Architecture and safety
 
 - `metamod-sys` uses libclang to parse a small C++ wrapper around the pinned
@@ -333,6 +344,15 @@ engine-demo shows explicit attribute arguments.
   resident without an implicit thread-exit destructor. Forced unload and
   engine restart in the same attachment are unsupported.
 
+Forced unload is a host operation. Classic Metamod and Metamod-R can
+override both `PT_NEVER` and a failed `Meta_Detach`, then close the module.
+Their unload paths can also override detach refusal for a reload that
+reaches that path. Native registrations may still refer to plugin code.
+In-flight callbacks or TLS cleanup can also require code or data from the
+module. Stop the server process before replacing or removing the plugin.
+[Classic Metamod unload path](https://github.com/alliedmodders/metamod-hl1/blob/18a10db686702e8ae9e0fcb5b5febf8881dc9c2d/metamod/mplugin.cpp#L943-L1020) ·
+[Metamod-R unload path](https://github.com/rehlds/Metamod-R/blob/master/metamod/src/mplugin.cpp#L429-L495)
+
 On Win32 the export macro uses stdcall for `GiveFnptrsToDll` and cdecl
 for the Metamod entry points. Metamod resolves these exports by name.
 The SDK leaves PE ordinals to the linker.
@@ -344,9 +364,13 @@ The SDK leaves PE ordinals to the linker.
   A rejected CVar attempt consumes its reservation, so retrying the same
   name cannot allocate another retained record. The native registration
   API returns no ownership or failure status. The SDK keeps submitted
-  storage resident. Classic Metamod copies the record and strings, while
-  ReHLDS can retain the record and replace the value pointer with engine
-  storage. A successful name lookup establishes presence only.
+  storage resident. Classic Metamod and Metamod-R copy CVar inputs in
+  their registration wrappers. ReHLDS can retain a record passed directly
+  to the engine and replace the value pointer with engine storage. The
+  SDK relies on the same conservative retention contract for classic
+  HLDS, whose implementation is closed source. A successful name lookup
+  establishes presence only.
+  [Metamod-R registration wrappers](https://github.com/rehlds/Metamod-R/blob/master/metamod/src/reg_support.cpp#L16-L69)
 - Version reads are capped at 64 bytes, command tokens share a 4,096-byte
   budget, and other native string copies are capped at 4,096 bytes per
   value, including the terminator. Null or over-limit values are treated as
@@ -363,6 +387,10 @@ The SDK leaves PE ordinals to the linker.
   and map epochs around native calls. Player information requires a
   valid client capacity and the edict serial observed at join, even if
   a replacement at the same index has not yet produced a player hook.
+  Player slot lookup rejects indices above the known client capacity.
+  Early hooks may arrive before a capacity snapshot is available.
+  Entity access becomes active only after a pre/post activation pair.
+  Deactivation or shutdown cancels an outstanding activation.
   Join tracking checks the original edict's live flag and serial again
   after the native slot lookup. A map transition, shutdown, or nested
   player lookup invalidates that attempt before the second read. The host

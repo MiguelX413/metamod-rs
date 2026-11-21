@@ -391,6 +391,8 @@ impl Server<'_, '_> {
 /// # Safety
 /// A non-null pointer must identify a stable initialized byte range in one
 /// allocation through its first NUL or `limit` bytes, whichever comes first.
+/// The host must keep those bytes allocated and unmodified during the scan
+/// and copy, including while the temporary Rust slice exists.
 /// This cannot check whether foreign memory is mapped or still live.
 pub(crate) unsafe fn copy_string(value: *const c_char, limit: usize) -> Option<CString> {
     if value.is_null() {
