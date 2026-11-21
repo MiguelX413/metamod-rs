@@ -9,7 +9,17 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 export CARGO_TARGET_DIR="$work/target"
-cargo build --locked --release --target i686-unknown-linux-gnu -p hello-world -p engine-demo
+if [[ ${METAMOD_SANITIZE_PLUGIN:-0} == 1 ]]; then
+    # The loader supplies one Clang ASan runtime for the whole process,
+    # including the instrumented cdylibs loaded by dlopen.
+    clang=${METAMOD_SANITIZER_CLANG:-clang}
+    export CXX="${METAMOD_SANITIZER_CXX:-clang++}"
+    METAMOD_SANITIZE_LOADER=1
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Zsanitizer=address -Zexternal-clangrt -Clinker=$clang" \
+        cargo +nightly build --locked --release --target i686-unknown-linux-gnu -p hello-world -p engine-demo
+else
+    cargo build --locked --release --target i686-unknown-linux-gnu -p hello-world -p engine-demo
+fi
 cargo build --locked --target i686-unknown-linux-gnu -p metamod-sys --example layout
 
 includes=(-I"$metamod/metamod" -I"$hlsdk/dlls" -I"$hlsdk/engine"
@@ -26,6 +36,10 @@ fi
 diff -u "$work/c-layout" "$work/rust-layout"
 for example in hello-world engine-demo; do
     plugin="$CARGO_TARGET_DIR/i686-unknown-linux-gnu/release/lib${example//-/_}.so"
+    if [[ ${METAMOD_SANITIZE_PLUGIN:-0} == 1 ]]; then
+        nm -D --undefined-only "$plugin" > "$work/imports"
+        grep -Eq ' U __asan_(load|report_load)' "$work/imports"
+    fi
     readelf -h "$plugin" | tee "$work/elf"
     grep -Eq 'Class: +ELF32' "$work/elf"
     grep -Eq 'Machine: +Intel 80386' "$work/elf"

@@ -10,7 +10,7 @@ use raw::{NEW_DLL_FUNCTIONS, edict_t};
 use std::{
     any::Any,
     cell::{Cell, RefCell},
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, VecDeque, hash_map::Entry},
     ffi::{CStr, c_char, c_int},
     io::{self, Write},
     mem::ManuallyDrop,
@@ -427,7 +427,7 @@ fn hook(callback: impl FnOnce()) {
         }
         if let State::Attached { globals, .. } = STATE.get() {
             let _result = ResultWriter(globals, MRES_IGNORED);
-            engine::invalidate_command_read();
+            engine::invalidate_string_read();
             callback();
         }
     });
@@ -524,7 +524,7 @@ fn synchronous<P: Plugin, T: Default>(
             return T::default();
         };
         let mut result = ResultWriter(globals, MRES_IGNORED);
-        engine::invalidate_command_read();
+        engine::invalidate_string_read();
         if disabled || SHUTDOWN.get() || RUNNING.replace(true) {
             return T::default();
         }
@@ -634,9 +634,10 @@ fn reset_players() {
 
 /// # Safety
 /// A non-null aligned edict must be valid for the native index lookup.
-unsafe fn player_slot(edict: *mut edict_t) -> Option<PlayerSlot> {
+/// Its identity fields must remain readable until a map transition or shutdown.
+unsafe fn player_slot(edict: *mut edict_t) -> Option<(PlayerSlot, i32)> {
     let index = ENGINE.get().index?;
-    if edict.is_null() || !edict.is_aligned() || SHUTDOWN.get() {
+    if SHUTDOWN.get() {
         return None;
     }
     if INDEX_LOOKUP.get().is_some() {
@@ -645,11 +646,17 @@ unsafe fn player_slot(edict: *mut edict_t) -> Option<PlayerSlot> {
         reset_players();
         return None;
     }
+    // SAFETY: The hook supplies the edict and its initialized identity fields.
+    let serial = unsafe { crate::trace::live_serial(edict) }?;
     INDEX_LOOKUP.set(Some(false));
     // SAFETY: Metamod supplied a live edict for this synchronous lookup.
     let index = unsafe { index(edict) };
-    if INDEX_LOOKUP.replace(None) == Some(false) && crate::trace::within_client_capacity(index) {
-        PlayerSlot::new(index)
+    if INDEX_LOOKUP.replace(None) == Some(false)
+        && crate::trace::within_client_capacity(index)
+        // SAFETY: No observed map transition or shutdown retired the slot.
+        && unsafe { crate::trace::live_serial(edict) } == Some(serial)
+    {
+        PlayerSlot::new(index).map(|slot| (slot, serial))
     } else {
         None
     }
@@ -662,7 +669,7 @@ unsafe extern "C" fn server_command<P: Plugin>() {
         }
         // Invalidate an outer snapshot even if registration or dispatch
         // has since been disabled. The command buffer may have changed.
-        engine::invalidate_command_read();
+        engine::invalidate_string_read();
         // Native commands do not own a Metamod hook-result slot.
         // SAFETY: The engine invoked this trampoline with live argument storage.
         if registration_available()
@@ -752,15 +759,7 @@ unsafe extern "C" fn server_deactivate<P: Plugin>() {
 unsafe extern "C" fn player_join<P: Plugin>(edict: *mut edict_t) {
     hook(|| {
         // SAFETY: The post hook supplies the live edict for this client.
-        // Capture its serial before the index callback can reenter the host.
-        if !SHUTDOWN.get()
-            && let Some(serial) = unsafe { crate::trace::live_serial(edict) }
-            && let Some(slot) = unsafe { player_slot(edict) }
-            // SAFETY: A successful slot lookup means no observed map
-            // transition, nested player lookup, or shutdown interrupted it.
-            // The host keeps the edict slot allocated until such a boundary,
-            // even when it frees or recycles the occupant.
-            && unsafe { crate::trace::live_serial(edict) } == Some(serial)
+        if let Some((slot, serial)) = unsafe { player_slot(edict) }
             && let Some(player) = EVENTS.with(|events| events.borrow_mut().join(slot, serial))
         {
             submit::<P>(Event::Join(player));
@@ -771,9 +770,14 @@ unsafe extern "C" fn player_join<P: Plugin>(edict: *mut edict_t) {
 unsafe extern "C" fn player_disconnect<P: Plugin>(edict: *mut edict_t) {
     hook(|| {
         // SAFETY: The pre hook supplies the edict being disconnected.
-        if let Some(slot) = unsafe { player_slot(edict) }
-            && let Some((player, _)) =
-                EVENTS.with(|events| events.borrow_mut().players.remove(&slot))
+        if let Some((slot, serial)) = unsafe { player_slot(edict) }
+            && let Some(player) = EVENTS.with(|events| {
+                let mut events = events.borrow_mut();
+                match events.players.entry(slot) {
+                    Entry::Occupied(entry) if entry.get().1 == serial => Some(entry.remove().0),
+                    _ => None,
+                }
+            })
         {
             submit::<P>(Event::Disconnect(player));
         }
@@ -812,6 +816,49 @@ mod tests {
             log: None,
             console: None,
         }));
+    }
+
+    #[test]
+    fn disconnect_lookup_rejects_a_replaced_edict() {
+        unsafe extern "C" fn replace(edict: *const edict_t) -> c_int {
+            // SAFETY: The test passes a writable, live edict slot.
+            unsafe { (*edict.cast_mut()).serialnumber = 2 };
+            1
+        }
+
+        #[derive(Default)]
+        struct TestPlugin;
+        impl Plugin for TestPlugin {
+            const METADATA: Metadata = METADATA;
+        }
+
+        queried();
+        ENGINE.set(Engine {
+            index: Some(replace),
+            ..Default::default()
+        });
+        let mut globals = MetaGlobals::default();
+        let mut functions = MetaFunctions::default();
+        let mut edict = edict_t {
+            serialnumber: 1,
+            ..Default::default()
+        };
+        let slot = PlayerSlot::new(1).unwrap();
+        // SAFETY: The tables and edict stay live for all hook calls.
+        unsafe {
+            assert_eq!(
+                attach::<TestPlugin>(PT_STARTUP, &mut functions, &mut globals),
+                1
+            );
+            let player = EVENTS
+                .with(|events| events.borrow_mut().join(slot, 2))
+                .unwrap();
+            player_disconnect::<TestPlugin>(&raw mut edict);
+            assert_eq!(player_at(slot), Some(player));
+            player_disconnect::<TestPlugin>(&raw mut edict);
+            assert_eq!(player_at(slot), None);
+            game_shutdown::<TestPlugin>();
+        }
     }
 
     #[test]
@@ -874,6 +921,58 @@ mod tests {
             game_shutdown::<TestPlugin>();
         }
         assert_eq!(ATTEMPTS.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn cvar_getter_discards_a_result_invalidated_during_native_reentry() {
+        unsafe extern "C" fn find(_: *const c_char) -> *mut raw::cvar_t {
+            // The presence check treats this address as an opaque value.
+            ptr::dangling_mut()
+        }
+
+        unsafe extern "C" fn get(_: *const c_char) -> *const c_char {
+            let value = std::ffi::CString::new("original value").unwrap();
+            let result = value.as_ptr();
+            // Model a native post hook that reenters the SDK and replaces the
+            // CVar value after the engine has selected its return pointer.
+            unsafe { start_frame::<TestPlugin>() };
+            drop(value);
+            result
+        }
+
+        #[derive(Default)]
+        struct TestPlugin;
+        impl Plugin for TestPlugin {
+            const METADATA: Metadata = METADATA;
+
+            fn start_frame(&mut self, context: &mut Context<'_>) {
+                assert_eq!(
+                    context
+                        .server()
+                        .cvar(&crate::console_name!(c"test_reentry")),
+                    Err(crate::EngineError::Unavailable)
+                );
+            }
+        }
+
+        queried();
+        ENGINE.set(Engine {
+            find_cvar: Some(find),
+            get_cvar: Some(get),
+            ..Default::default()
+        });
+        let mut globals = MetaGlobals::default();
+        let mut functions = MetaFunctions::default();
+        // SAFETY: The hook globals remain live through nested dispatch.
+        unsafe {
+            assert_eq!(
+                attach::<TestPlugin>(PT_STARTUP, &mut functions, &mut globals),
+                1
+            );
+            start_frame::<TestPlugin>();
+            assert!(registration_available());
+            game_shutdown::<TestPlugin>();
+        }
     }
 
     #[test]

@@ -194,6 +194,23 @@ impl PlayerId {
 }
 
 /// Access to plugin services during a callback on the GoldSrc server thread.
+///
+/// ```compile_fail
+/// use metamod_rs::Context;
+/// fn retain<'a>(context: &'a Context<'_>) -> &'a Context<'static> {
+///     context
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use metamod_rs::Context;
+/// fn send_to_other_thread(context: &Context<'_>) {
+///     std::thread::scope(|scope| {
+///         let server = context.server();
+///         scope.spawn(move || server.print(c"invalid thread"));
+///     });
+/// }
+/// ```
 pub struct Context<'callback> {
     id: *mut PluginInfo,
     log: Log,

@@ -64,7 +64,7 @@ pub(crate) type CommandCallback = unsafe extern "C" fn();
 thread_local! {
     static CVARS: RefCell<HashSet<&'static CStr>> = RefCell::new(HashSet::new());
     static COMMANDS: RefCell<HashSet<&'static CStr>> = RefCell::new(HashSet::new());
-    static READING_COMMAND: Cell<Option<bool>> = const { Cell::new(None) };
+    static READING_NATIVE_STRING: Cell<Option<bool>> = const { Cell::new(None) };
 }
 
 /// A command invocation with owned copies of the engine's argument tokens.
@@ -343,9 +343,13 @@ impl Server<'_, '_> {
             return Ok(None);
         }
         available()?;
-        // SAFETY: Copy the synchronous engine result before making another native call.
+        let reading = StringRead::begin().ok_or(EngineError::Unavailable)?;
+        // SAFETY: The name lives through the synchronous getter.
         let result = unsafe { get(name.as_c_str().as_ptr()) };
         available()?;
+        if !reading.uninterrupted() {
+            return Err(EngineError::Unavailable);
+        }
         // SAFETY: The returned C string remains readable until the next
         // native call. Checking availability above only reads TLS.
         Ok(unsafe { copy_string(result, MAX_ENGINE_STRING) })
@@ -412,9 +416,34 @@ pub(crate) unsafe fn copy_string(value: *const c_char, limit: usize) -> Option<C
     None
 }
 
-pub(crate) fn invalidate_command_read() {
-    if READING_COMMAND.get().is_some() {
-        READING_COMMAND.set(Some(true));
+// Observe callbacks that can run after an engine getter has captured its
+// result but before its native wrapper returns it to Rust.
+pub(crate) struct StringRead;
+
+impl StringRead {
+    pub(crate) fn begin() -> Option<Self> {
+        if READING_NATIVE_STRING.get().is_some() {
+            invalidate_string_read();
+            return None;
+        }
+        READING_NATIVE_STRING.set(Some(false));
+        Some(Self)
+    }
+
+    pub(crate) fn uninterrupted(&self) -> bool {
+        READING_NATIVE_STRING.get() == Some(false)
+    }
+}
+
+impl Drop for StringRead {
+    fn drop(&mut self) {
+        READING_NATIVE_STRING.set(None);
+    }
+}
+
+pub(crate) fn invalidate_string_read() {
+    if READING_NATIVE_STRING.get().is_some() {
+        READING_NATIVE_STRING.set(Some(true));
     }
 }
 
@@ -422,21 +451,7 @@ pub(crate) fn invalidate_command_read() {
 /// Called synchronously by the engine with a live command argument context
 /// and on the attached server thread.
 pub(crate) unsafe fn read_command() -> Option<Command> {
-    if READING_COMMAND.get().is_some() {
-        // GoldSrc holds arguments in a shared command buffer. A nested
-        // invocation during acquisition makes the outer snapshot unreliable.
-        READING_COMMAND.set(Some(true));
-        return None;
-    }
-
-    struct Reading;
-    impl Drop for Reading {
-        fn drop(&mut self) {
-            READING_COMMAND.set(None);
-        }
-    }
-    READING_COMMAND.set(Some(false));
-    let _reading = Reading;
+    let reading = StringRead::begin()?;
 
     let engine = __ffi::engine()?;
     let argc = engine.argc?;
@@ -448,15 +463,12 @@ pub(crate) unsafe fn read_command() -> Option<Command> {
     }
     let mut remaining = 4096usize;
     let mut argument = |index| {
-        if READING_COMMAND.get() != Some(false) || !__ffi::registration_available() {
+        if !reading.uninterrupted() || !__ffi::registration_available() {
             return None;
         }
         // SAFETY: Each index is within argc. Copy before the next native call.
         let value = unsafe { argv(index) };
-        if value.is_null()
-            || READING_COMMAND.get() != Some(false)
-            || !__ffi::registration_available()
-        {
+        if value.is_null() || !reading.uninterrupted() || !__ffi::registration_available() {
             return None;
         }
         // SAFETY: The engine's token remains live until the next native call.
@@ -500,10 +512,14 @@ impl Context<'_> {
         let auth_id = if let Some(auth_id) = engine.auth_id {
             // SAFETY: Resolve and validate the edict again after any prior native call.
             let edict = lookup()?;
+            let reading = StringRead::begin()?;
             let result = unsafe { auth_id(edict) };
             // SAFETY: A reentrant callback can change the occupant, but the
             // edict arena remains readable while the map epoch is unchanged.
-            if !self.is_player_current(id) || !unsafe { handle.still_matches(edict) } {
+            if !reading.uninterrupted()
+                || !self.is_player_current(id)
+                || !unsafe { handle.still_matches(edict) }
+            {
                 return None;
             }
             // SAFETY: No native call has run since the getter returned a

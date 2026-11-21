@@ -67,6 +67,16 @@ jobs:
           RUSTUP_TOOLCHAIN: stable
           METAMOD_SANITIZE_LOADER: '1'
         run: bash verify/linux-i686.sh
+      - name: Run the Rust plugins and C++ loader under ASan
+        env:
+          RUSTUP_TOOLCHAIN: stable
+          METAMOD_SANITIZE_PLUGIN: '1'
+          METAMOD_SANITIZER_CLANG: clang-18
+          METAMOD_SANITIZER_CXX: clang++-18
+        run: |
+          sudo apt-get install -y clang-18 libclang-rt-18-dev
+          rustup toolchain install nightly --profile minimal --target i686-unknown-linux-gnu
+          bash verify/linux-i686.sh
 
   rust-asan:
     name: Rust AddressSanitizer and LeakSanitizer (Linux ${{ matrix.arch }})

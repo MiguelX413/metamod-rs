@@ -1,6 +1,6 @@
 use crate::{
     __ffi, Context, Server,
-    engine::{Engine, MAX_ENGINE_STRING, copy_string},
+    engine::{Engine, MAX_ENGINE_STRING, StringRead, copy_string},
 };
 use metamod_sys::{
     EngineGlobals,
@@ -301,16 +301,18 @@ impl Context<'_> {
             if active_map() != Some(entity.map) {
                 return None;
             }
+            let reading = StringRead::begin()?;
             // SAFETY: The bit pattern comes from the engine's own string_t.
             // GoldSrc uses signed offsets at this callback boundary.
             let string = unsafe { lookup(index as i32) };
             // SAFETY: The edict slot remains readable while its map is active.
-            if !unsafe { entity.still_matches(edict) } {
+            if !reading.uninterrupted() || !unsafe { entity.still_matches(edict) } {
                 return None;
             }
             // SAFETY: The current-map engine string can be read until the
             // next native call. Copy it before revalidating the edict.
             *value = unsafe { copy_string(string, MAX_ENGINE_STRING) };
+            drop(reading);
             entity.resolve(engine)?;
         }
         let [
@@ -666,6 +668,35 @@ mod tests {
         assert_eq!(result, Err(EntityError::MapChanged));
         unsafe { set_globals(ptr::null_mut()) };
         invalidate_map();
+    }
+
+    #[test]
+    fn resolve_discards_a_pointer_returned_from_a_retired_map() {
+        unsafe extern "C" fn lookup(_: i32) -> *mut edict_t {
+            activate_map();
+            // Model a native wrapper returning an old arena's address.
+            ptr::dangling_mut()
+        }
+
+        let mut globals = EngineGlobals {
+            maxEntities: 8,
+            ..Default::default()
+        };
+        // SAFETY: The fixture stays allocated until its pointer is cleared.
+        unsafe { set_globals(&raw mut globals) };
+        activate_map();
+        let handle = EntityHandle {
+            index: 7,
+            serial: 42,
+            map: active_map().unwrap(),
+        };
+        let engine = Engine {
+            entity: Some(lookup),
+            ..Default::default()
+        };
+        assert!(handle.resolve(engine).is_none());
+        invalidate_map();
+        unsafe { set_globals(ptr::null_mut()) };
     }
 
     #[test]

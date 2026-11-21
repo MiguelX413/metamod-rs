@@ -380,8 +380,11 @@ The SDK leaves PE ordinals to the linker.
   value, including the terminator. Null or over-limit values are treated as
   absent. These limits bound reads. The host still supplies a stable,
   initialized pointer readable through the first NUL or the limit,
-  whichever comes first. Argument getters must also preserve the active
-  command context unless an observable callback invalidates it.
+  whichever comes first. A Metamod hook or registered command observed
+  during a native string getter invalidates the pending read before Rust
+  touches the returned pointer. The host must preserve the returned
+  buffer and the active command context across activity the SDK cannot
+  observe.
   Metamod utility messages are capped at 1,021 bytes to leave room for
   the terminator and console newline in classic Metamod's formatting
   buffer. `Server::print` continues to pass its C string directly to the engine.
@@ -397,8 +400,9 @@ The SDK leaves PE ordinals to the linker.
   returns from the GameDLL. The host must deliver matching pre and post
   hooks in stack order. Deactivation cancels publication for any
   outstanding activation, and shutdown permanently revokes access.
-  Join tracking checks the original edict's live flag and serial again
-  after the native slot lookup. A map transition, shutdown, or nested
+  Join and disconnect tracking check the original edict's live flag and serial
+  again after the native slot lookup. A disconnect removes a tracked session
+  only if its serial matches the edict. A map transition, shutdown, or nested
   player lookup invalidates that attempt before the second read. The host
   keeps the slot allocation readable until such a boundary, including
   during map loading if it supplies a player hook then.
@@ -473,6 +477,14 @@ sanitizer runtimes and leaves the Rust libraries uninstrumented. The
 32-bit GCC AddressSanitizer runtime also checks for leaks. The loader
 marks only the specific CVar and command allocations it receives that
 the SDK intentionally retains for process lifetime.
+
+Set `METAMOD_SANITIZE_PLUGIN=1` to build both Rust plugins with nightly ASan
+and run them under the Clang-instrumented C++ loader. This mode requires
+the nightly i686 Rust target, matching Clang and Clang++ drivers, and the
+32-bit Clang sanitizer runtimes. Set `METAMOD_SANITIZER_CLANG` and
+`METAMOD_SANITIZER_CXX` if the drivers have versioned names. The loader
+provides the ASan runtime for both plugins and keeps leak detection enabled.
+
 The separate Linux Rust sanitizer job runs library tests with nightly
 AddressSanitizer on x86_64 and i686. Both variants instrument the target
 Rust crates and use the prebuilt standard library. For x86_64, run:
