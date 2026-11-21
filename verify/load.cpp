@@ -6,6 +6,10 @@
 #include <meta_api.h>
 #include <h_export.h>
 
+#ifdef METAMOD_LOADER_LSAN
+#include <sanitizer/lsan_interface.h>
+#endif
+
 static_assert(sizeof(void *) == 4, "build the loader for x86");
 
 static plugin_info_t *info;
@@ -41,6 +45,13 @@ static cvar_t *find_cvar(const char *name) {
 static void register_cvar(cvar_t *cvar) {
     assert(!registered_cvar && std::strcmp(cvar->name, "rust_hello_message") == 0);
     assert(cvar->flags == 0 && cvar->next == nullptr);
+#ifdef METAMOD_LOADER_LSAN
+    // The SDK retains these allocations across shutdown. Mark the initial
+    // string before the engine replaces its pointer in the record.
+    __lsan_ignore_object(cvar);
+    __lsan_ignore_object(cvar->name);
+    __lsan_ignore_object(cvar->string);
+#endif
     registered_cvar = cvar;
     std::strcpy(cvar_value, cvar->string);
     cvar->string = cvar_value;
@@ -58,6 +69,9 @@ static void set_cvar(const char *name, const char *value) {
 
 static void register_command(const char *name, void (*callback)()) {
     assert(callback);
+#ifdef METAMOD_LOADER_LSAN
+    __lsan_ignore_object(name);
+#endif
     if (std::strcmp(name, "rust_trace") == 0) {
         assert(!trace_command);
         trace_command = callback;

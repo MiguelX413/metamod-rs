@@ -62,14 +62,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang libclang-dev g++-multilib lib32asan8 lib32ubsan1
           rustup toolchain install stable --profile minimal --target i686-unknown-linux-gnu
-      - name: Verify ABI and run the loader with ASan and UBSan
+      - name: Verify ABI and run the loader with ASan, UBSan, and LSan
         env:
           RUSTUP_TOOLCHAIN: stable
           METAMOD_SANITIZE_LOADER: '1'
         run: bash verify/linux-i686.sh
 
   rust-asan:
-    name: Rust AddressSanitizer (Linux x86_64)
+    name: Rust AddressSanitizer and LeakSanitizer (Linux x86_64)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1

@@ -17,7 +17,8 @@ includes=(-I"$metamod/metamod" -I"$hlsdk/dlls" -I"$hlsdk/engine"
 "${CXX:-c++}" -m32 -std=c++11 -DLINUX -DGNUC "${includes[@]}" verify/layout.cpp -o "$work/layout"
 sanitizers=()
 if [[ ${METAMOD_SANITIZE_LOADER:-0} == 1 ]]; then
-    sanitizers=(-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    sanitizers=(-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+                -DMETAMOD_LOADER_LSAN)
 fi
 "${CXX:-c++}" -m32 -std=c++11 -DLINUX -DGNUC "${includes[@]}" "${sanitizers[@]}" verify/load.cpp -pthread -ldl -o "$work/load"
 "$work/layout" > "$work/c-layout"
@@ -31,8 +32,7 @@ for example in hello-world engine-demo; do
     nm -D --defined-only "$plugin" | awk '$2 == "T" {print $3}' | sort > "$work/exports"
     printf '%s\n' GiveFnptrsToDll Meta_Attach Meta_Detach Meta_Query | diff -u - "$work/exports"
     if [[ ${METAMOD_SANITIZE_LOADER:-0} == 1 ]]; then
-        # Native registrations intentionally stay resident until process exit.
-        ASAN_OPTIONS="${ASAN_OPTIONS:+$ASAN_OPTIONS:}detect_leaks=0" "$work/load" "$plugin" "$example"
+        ASAN_OPTIONS="${ASAN_OPTIONS:+$ASAN_OPTIONS:}detect_leaks=1" "$work/load" "$plugin" "$example"
     else
         "$work/load" "$plugin" "$example"
     fi

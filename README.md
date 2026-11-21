@@ -425,8 +425,10 @@ and panic containment during callbacks and cleanup.
 The Linux i686 CI job sets `METAMOD_SANITIZE_LOADER=1` to instrument the C++
 loader with AddressSanitizer and UndefinedBehaviorSanitizer. Set the same
 variable when running the Linux script locally. This requires the 32-bit
-sanitizer runtimes and leaves the Rust libraries uninstrumented. Leak
-detection is disabled for intentional process-lifetime registrations.
+sanitizer runtimes and leaves the Rust libraries uninstrumented. The
+32-bit GCC AddressSanitizer runtime also checks for leaks. The loader
+marks only the specific CVar and command allocations it receives that
+the SDK intentionally retains for process lifetime.
 The separate Linux x86_64 CI job runs Rust library tests with nightly
 AddressSanitizer. It instruments the target Rust crates and uses the
 prebuilt standard library. Run the same check locally with:
