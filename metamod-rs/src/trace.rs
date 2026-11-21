@@ -639,6 +639,36 @@ mod tests {
     }
 
     #[test]
+    fn discovery_discards_retired_arena_pointer_after_lookup() {
+        let mut globals = EngineGlobals {
+            maxEntities: 8,
+            ..Default::default()
+        };
+        let old_edict = Box::into_raw(Box::new(edict_t::default()));
+        // SAFETY: The test globals remain allocated until cleared below.
+        unsafe { set_globals(&raw mut globals) };
+        activate_map();
+        let map = active_map().unwrap();
+        // SAFETY: The lookup retires the map before deallocating the slot.
+        // The old pointer is an opaque return value on this path.
+        let result = unsafe {
+            find_entity(
+                |_| {
+                    invalidate_map();
+                    drop(Box::from_raw(old_edict));
+                    activate_map();
+                    old_edict
+                },
+                7,
+                map,
+            )
+        };
+        assert_eq!(result, Err(EntityError::MapChanged));
+        unsafe { set_globals(ptr::null_mut()) };
+        invalidate_map();
+    }
+
+    #[test]
     fn invalid_capacities_revoke_the_index_range_without_native_lookup() {
         let mut globals = EngineGlobals::default();
         let globals_ptr = &raw mut globals;

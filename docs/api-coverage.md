@@ -22,6 +22,13 @@ The Linux i686 layout probes and loader harness passed for both examples.
 Win32 CI is configured to run the same cases. The harness simulates the host,
 so live-server verification and cross-fork behavior are tracked separately.
 
+The loader models nested map activation and checks that tracing stays
+unavailable until the outer activation completes. It also supplies an
+unterminated command token backed by the entire read budget. A Rust
+discovery test covers a lookup that returns a retired arena pointer after
+a map change. A shutdown regression checks that interrupted CVar lookups
+return `EngineError::Unavailable`.
+
 ## Extension rules
 
 - Use the bindgen callback table as the signature source. Keep native pointer

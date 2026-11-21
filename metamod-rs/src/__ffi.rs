@@ -85,7 +85,9 @@ thread_local! {
     });
     static RUNNING: Cell<bool> = const { Cell::new(false) };
     static INDEX_LOOKUP: Cell<Option<bool>> = const { Cell::new(None) };
-    static ACTIVATING: Cell<bool> = const { Cell::new(false) };
+    // Count paired activation hooks so an inner post hook cannot expose
+    // an arena while the outer GameDLL activation is still running.
+    static ACTIVATION: Cell<(usize, bool)> = const { Cell::new((0, false)) };
     static SHUTDOWN: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -710,7 +712,11 @@ unsafe extern "C" fn start_frame<P: Plugin>() {
 
 unsafe extern "C" fn begin_map(_: *mut edict_t, _: c_int, _: c_int) {
     hook(|| {
-        ACTIVATING.set(!SHUTDOWN.get());
+        if SHUTDOWN.get() {
+            return;
+        }
+        let (depth, cancelled) = ACTIVATION.get();
+        ACTIVATION.set((depth.saturating_add(1), cancelled));
         crate::trace::invalidate_map();
         reset_players();
     });
@@ -718,9 +724,12 @@ unsafe extern "C" fn begin_map(_: *mut edict_t, _: c_int, _: c_int) {
 
 unsafe extern "C" fn server_activate<P: Plugin>(_: *mut edict_t, _: c_int, _: c_int) {
     hook(|| {
-        // A nested deactivation can finish before the outer activation's
-        // post hook runs. That post hook must not republish the edict arena.
-        if ACTIVATING.replace(false) && !SHUTDOWN.get() {
+        let (depth, cancelled) = ACTIVATION.get();
+        if depth == 0 {
+            return;
+        }
+        ACTIVATION.set((depth - 1, depth > 1 && cancelled));
+        if depth == 1 && !cancelled && !SHUTDOWN.get() {
             if INDEX_LOOKUP.get().is_some() {
                 INDEX_LOOKUP.set(Some(true));
             }
@@ -732,7 +741,8 @@ unsafe extern "C" fn server_activate<P: Plugin>(_: *mut edict_t, _: c_int, _: c_
 
 unsafe extern "C" fn server_deactivate<P: Plugin>() {
     hook(|| {
-        ACTIVATING.set(false);
+        let (depth, _) = ACTIVATION.get();
+        ACTIVATION.set((depth, depth != 0));
         crate::trace::invalidate_map();
         reset_players();
         submit::<P>(Event::Deactivate);
@@ -773,7 +783,7 @@ unsafe extern "C" fn player_disconnect<P: Plugin>(edict: *mut edict_t) {
 unsafe extern "C" fn game_shutdown<P: Plugin>() {
     hook(|| {
         if !SHUTDOWN.replace(true) {
-            ACTIVATING.set(false);
+            ACTIVATION.set((0, false));
             crate::trace::invalidate_map();
             reset_players();
             EVENTS.with(|events| events.borrow_mut().pending.clear());
@@ -864,6 +874,61 @@ mod tests {
             game_shutdown::<TestPlugin>();
         }
         assert_eq!(ATTEMPTS.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn cvar_lookup_interrupted_by_shutdown_discards_native_result() {
+        unsafe extern "C" fn find(_: *const c_char) -> *mut raw::cvar_t {
+            // SAFETY: This test attaches on this thread with live globals.
+            unsafe { game_shutdown::<TestPlugin>() };
+            ptr::null_mut()
+        }
+
+        unsafe extern "C" fn get(_: *const c_char) -> *const c_char {
+            ptr::null()
+        }
+
+        #[derive(Default)]
+        struct TestPlugin;
+        impl Plugin for TestPlugin {
+            const METADATA: Metadata = METADATA;
+
+            fn start_frame(&mut self, context: &mut Context<'_>) {
+                assert_eq!(
+                    context
+                        .server()
+                        .cvar(&crate::console_name!(c"test_shutdown")),
+                    Err(crate::EngineError::Unavailable)
+                );
+            }
+        }
+
+        queried();
+        ENGINE.set(Engine {
+            find_cvar: Some(find),
+            get_cvar: Some(get),
+            ..Default::default()
+        });
+        let mut globals = MetaGlobals::default();
+        let mut functions = MetaFunctions::default();
+        // SAFETY: The native tables remain live on this thread through shutdown.
+        unsafe {
+            assert_eq!(
+                attach::<TestPlugin>(PT_STARTUP, &mut functions, &mut globals),
+                1
+            );
+            start_frame::<TestPlugin>();
+        }
+        assert!(SHUTDOWN.get());
+        assert!(INSTANCE.with(|instance| instance.borrow().is_none()));
+        assert!(matches!(
+            STATE.get(),
+            State::Attached {
+                disabled: false,
+                ..
+            }
+        ));
+        assert_eq!(globals.mres, MRES_IGNORED);
     }
 
     #[test]

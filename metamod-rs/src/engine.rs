@@ -247,7 +247,9 @@ fn exists(engine: Engine, name: &CStr) -> Result<bool, EngineError> {
     let find = engine.find_cvar.ok_or(EngineError::Unavailable)?;
     available()?;
     // SAFETY: The synchronous lookup borrows a valid name. We never dereference the result.
-    Ok(!unsafe { find(name.as_ptr()) }.is_null())
+    let found = !unsafe { find(name.as_ptr()) }.is_null();
+    available()?;
+    Ok(found)
 }
 
 fn registration_available() -> Result<(), EngineError> {

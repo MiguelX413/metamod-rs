@@ -473,6 +473,15 @@ int main(int argc, char **argv) {
         post_hooks.pfnServerActivate(nullptr, 0, 0);
         assert(trace_command);
         args[0] = "rust_trace";
+        // An inner activation cannot publish an arena while the outer
+        // GameDLL activation can still replace it.
+        hooks.pfnServerActivate(nullptr, 0, 0);
+        hooks.pfnServerActivate(nullptr, 0, 0);
+        post_hooks.pfnServerActivate(nullptr, 0, 0);
+        expect_inactive_trace = true;
+        trace_command();
+        assert(!expect_inactive_trace && logged == 13);
+        post_hooks.pfnServerActivate(nullptr, 0, 0);
         trace_command();
         assert(logged == 15);
         trace_transition = true;
@@ -487,6 +496,18 @@ int main(int argc, char **argv) {
         assert(!expect_inactive_trace && logged == 16);
     } else {
         assert(logged == 3 && !command && !registered_cvar);
+    }
+    if (engine_demo) {
+        // The command budget is 4,096 bytes. Supply an initialized
+        // allocation covering the full budget with no terminator.
+        char unterminated[4096];
+        std::memset(unterminated, 'x', sizeof(unterminated));
+        const char *previous_arg = args[0];
+        args[0] = unterminated;
+        const int previous_logs = logged;
+        command();
+        assert(logged == previous_logs);
+        args[0] = previous_arg;
     }
     assert(keyvalue_logs == (engine_demo ? 2 : 0));
     const int expected_logs = engine_demo ? 16 : 3;

@@ -366,11 +366,15 @@ The SDK leaves PE ordinals to the linker.
   API returns no ownership or failure status. The SDK keeps submitted
   storage resident. Classic Metamod and Metamod-R copy CVar inputs in
   their registration wrappers. ReHLDS can retain a record passed directly
-  to the engine and replace the value pointer with engine storage. The
+  to the engine and replace the value pointer with engine storage. It
+  unlinks external CVars without freeing the caller's record. Its game
+  command path copies the name and stores the callback. The
   SDK relies on the same conservative retention contract for classic
   HLDS, whose implementation is closed source. A successful name lookup
   establishes presence only.
-  [Metamod-R registration wrappers](https://github.com/rehlds/Metamod-R/blob/master/metamod/src/reg_support.cpp#L16-L69)
+  [Metamod-R registration wrappers](https://github.com/rehlds/Metamod-R/blob/master/metamod/src/reg_support.cpp#L16-L69) ·
+  [ReHLDS CVar registration and unlinking](https://github.com/rehlds/ReHLDS/blob/master/rehlds/engine/cvar.cpp) ·
+  [ReHLDS game command registration](https://github.com/rehlds/ReHLDS/blob/master/rehlds/engine/cmd.cpp#L756-L799)
 - Version reads are capped at 64 bytes, command tokens share a 4,096-byte
   budget, and other native string copies are capped at 4,096 bytes per
   value, including the terminator. Null or over-limit values are treated as
@@ -389,8 +393,10 @@ The SDK leaves PE ordinals to the linker.
   a replacement at the same index has not yet produced a player hook.
   Player slot lookup rejects indices above the known client capacity.
   Early hooks may arrive before a capacity snapshot is available.
-  Entity access becomes active only after a pre/post activation pair.
-  Deactivation or shutdown cancels an outstanding activation.
+  Entity access becomes active after the outermost paired activation hook
+  returns from the GameDLL. The host must deliver matching pre and post
+  hooks in stack order. Deactivation cancels publication for any
+  outstanding activation, and shutdown permanently revokes access.
   Join tracking checks the original edict's live flag and serial again
   after the native slot lookup. A map transition, shutdown, or nested
   player lookup invalidates that attempt before the second read. The host
@@ -401,10 +407,15 @@ The SDK leaves PE ordinals to the linker.
   another native call. Native return buffers must remain readable until
   that copy completes. Alignment checks can reject malformed inputs, but
   cannot establish that an aligned pointer refers to readable memory. In
-  particular, the host must return a current-map edict or null from lookup
-  and tracing, keep an edict slot allocated while its map is active, and
+  particular, if the map remains active throughout lookup or tracing,
+  the host must return a current-map edict or null. It must keep edict
+  arguments valid whenever native code uses them, including when a
+  native wrapper reenters before forwarding a call. The host must keep
+  an edict slot allocated while its map is active and
   change the slot's serial when it is recycled. A serial that wraps within
   the same map can make an ancient handle indistinguishable from a newer one.
+  String-table offsets copied from entity fields must stay valid for
+  lookups throughout that map, including across reentrant field changes.
 - Metamod provides aligned initialized ABI data, valid callback functions,
   and writable hook-result globals through the return of each active
   hook. This includes outer hooks when shutdown is observed reentrantly.
