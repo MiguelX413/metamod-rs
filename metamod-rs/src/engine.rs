@@ -277,6 +277,8 @@ fn reserve_name(name: &ConsoleName, cvar: bool) -> Result<&'static CStr, EngineE
                 return Err(EngineError::RegistrationLimit);
             }
             let name: &'static CStr = Box::leak(name.as_c_str().to_owned().into_boxed_c_str());
+            #[cfg(all(test, metamod_lsan))]
+            crate::ignore_intentionally_retained(name);
             if cvar {
                 cvars.insert(name);
             } else {
@@ -311,11 +313,17 @@ impl Server<'_, '_> {
         // attempt may have handed the name and CVar storage to the host.
         let name = reserve_name(name, true)?;
         let initial = Box::leak(default.as_c_str().to_owned().into_boxed_c_str());
-        let cvar = Box::into_raw(Box::new(cvar_t {
+        let cvar = Box::new(cvar_t {
             name: name.as_ptr(),
             string: initial.as_ptr(),
             ..Default::default()
-        }));
+        });
+        #[cfg(all(test, metamod_lsan))]
+        {
+            crate::ignore_intentionally_retained(initial);
+            crate::ignore_intentionally_retained(cvar.as_ref());
+        }
+        let cvar = Box::into_raw(cvar);
         // SAFETY: The structure is writable and all input storage stays resident.
         unsafe { register(cvar) };
         if exists(engine, name)? {

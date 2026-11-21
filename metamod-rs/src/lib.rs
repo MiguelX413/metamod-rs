@@ -10,6 +10,17 @@ mod hooks;
 mod runtime;
 mod trace;
 
+#[cfg(all(test, metamod_lsan))]
+fn ignore_intentionally_retained<T: ?Sized>(allocation: &T) {
+    unsafe extern "C" {
+        fn __lsan_ignore_object(pointer: *const std::ffi::c_void);
+    }
+
+    // SAFETY: The sanitizer test build links LeakSanitizer. The reference
+    // identifies the live allocation explicitly retained by the caller.
+    unsafe { __lsan_ignore_object(std::ptr::from_ref(allocation).cast()) };
+}
+
 pub use engine::{Command, ConsoleName, CvarValue, EngineError, PlayerInfo};
 pub use hooks::{HookResult, KeyValueEvent, PostHookResult};
 pub use trace::{

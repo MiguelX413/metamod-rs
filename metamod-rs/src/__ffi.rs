@@ -160,6 +160,8 @@ fn contained<T>(callback: impl FnOnce() -> T) -> Option<T> {
             // even on retryable attach failures. If Drop panics, retain only
             // the secondary payload rather than risk an unbounded panic chain.
             if let Err(secondary) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
+                #[cfg(all(test, metamod_lsan))]
+                crate::ignore_intentionally_retained(secondary.as_ref());
                 std::mem::forget(secondary);
             }
             None

@@ -18,3 +18,6 @@ metamod-macros = { path = "../metamod-macros", optional = true }
 [features]
 default = ["macros"]
 macros = ["dep:metamod-macros"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(metamod_lsan)'] }

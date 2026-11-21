@@ -432,13 +432,14 @@ AddressSanitizer. It instruments the target Rust crates and uses the
 prebuilt standard library. Run the same check locally with:
 
 ```sh
-ASAN_OPTIONS=detect_leaks=0 RUSTFLAGS=-Zsanitizer=address \
+ASAN_OPTIONS=detect_leaks=1 RUSTFLAGS='-Zsanitizer=address --cfg metamod_lsan' \
   cargo +nightly test --locked --workspace --lib --target x86_64-unknown-linux-gnu
 ```
 
-Leak detection is disabled for those tests because registration fixtures
-intentionally retain host-visible storage. Address checks still fail the
-job. This 64-bit test run exercises Rust FFI code with test fixtures.
+Leak detection is enabled. Test-only annotations identify the specific
+registration allocations and secondary panic payloads that the SDK
+deliberately retains. Unrelated leaks still fail the job.
+This 64-bit test run exercises Rust FFI code with test fixtures.
 The x86 platform jobs cover the shipping ABI and native loader.
 The Linux script accepts two optional paths for comparing against separate C++
 reference checkouts. Binding generation always uses the submodules.
