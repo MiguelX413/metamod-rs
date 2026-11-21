@@ -416,8 +416,9 @@ It also checks line and hull tracing, discovery across vacant slots,
 out-of-range lookup, spatial snapshots, and interruption by map changes.
 Rust tests cover identity invalidation, dispatch limits, off-thread dispatch,
 and panic containment during callbacks and cleanup.
-Set `METAMOD_SANITIZE_LOADER=1` on Linux to instrument the C++ loader with
-AddressSanitizer and UndefinedBehaviorSanitizer. This requires the 32-bit
+The Linux i686 CI job sets `METAMOD_SANITIZE_LOADER=1` to instrument the C++
+loader with AddressSanitizer and UndefinedBehaviorSanitizer. Set the same
+variable when running the Linux script locally. This requires the 32-bit
 sanitizer runtimes and leaves the Rust libraries uninstrumented. Leak
 detection is disabled for intentional process-lifetime registrations.
 The Linux script accepts two optional paths for comparing against separate C++
