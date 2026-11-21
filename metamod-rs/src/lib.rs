@@ -17,7 +17,8 @@ pub use trace::{
 };
 
 pub use runtime::{
-    Context, InvalidPlayerSlot, InvalidPlayerUserId, PlayerId, PlayerSlot, PlayerUserId, Server,
+    Context, InvalidPlayerSlot, InvalidPlayerUserId, ParsePlayerNumberError, PlayerId, PlayerSlot,
+    PlayerUserId, Server,
 };
 
 #[cfg(feature = "macros")]

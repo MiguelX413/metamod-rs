@@ -77,6 +77,12 @@ or map boundary invalidates old IDs immediately. Tracking depends on the
 host delivering its normal join, disconnect, and map callbacks on the
 server thread. It covers players whose joins the plugin observed.
 
+Parse UTF-8 input with `text.parse::<PlayerSlot>()` or
+`text.parse::<PlayerUserId>()`. Both use standard Rust `i32` syntax.
+`ParsePlayerNumberError::Integer` preserves the underlying integer error,
+including overflow. `Invalid` reports a parsed zero or negative value.
+For native command arguments, call `arg.to_str()` before parsing.
+
 Use the lifecycle hooks to clear map-specific state and
 `ctx.server().print(&CStr)` for console messages within a callback. Use a
 `c"..."` literal or construct a `CString` for dynamic text. The SDK sends
