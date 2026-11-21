@@ -6,17 +6,24 @@ from pathlib import Path
 import re
 
 NATIVE_PREFIX = b"MM_AUDIT_NATIVE "
-VERSION = r"([0-9][0-9A-Za-z.+_-]*)"
-MANAGER = re.compile(r"\b(Metamod(?:[- ]R)?)\s+(?:version\s*[:=]?\s*|v\s*)?" + VERSION, re.I)
-ENGINE = re.compile(r"\b(ReHLDS version|Exe version)\s*[:=]?\s*" + VERSION, re.I)
-BUILD = re.compile(r"\b(?:Exe build|Build date)\s*:\s*.*\((\d+)\)\s*$", re.I)
-GAME_PATH = re.compile(r"\b(?:dll pathname|gamedll path(?:name)?)\s*:\s*(.+?)\s*$", re.I)
-PLUGIN_ROW = re.compile(r"(?:Rust Runtime Audit|(?:lib)?metamod_audit\.(?:so|dll))", re.I)
+CONSOLE_PREFIX = r"^\s*(?:L\s+\d{2}/\d{2}/\d{4}\s+-\s+\d{2}:\d{2}:\d{2}:\s*)?(?:\[META(?:MOD)?\]\s*)?"
+VERSION = r"([0-9]+(?:\.[0-9]+)+(?:[-+_][0-9A-Za-z.+_-]+)?)"
+MANAGER = re.compile(CONSOLE_PREFIX + r"(Metamod(?:[- ]R)?)\s+(?:version\s*[:=]?\s*|v\s*)?"
+                     + VERSION + r"(?=\s|,|$)", re.I)
+ENGINE = re.compile(CONSOLE_PREFIX + r"(ReHLDS\s+version|Exe\s+version)\s*[:=]?\s*"
+                    + VERSION + r"(/[0-9A-Za-z_-]+)?(?=\s|\(|$)", re.I)
+BUILD = re.compile(CONSOLE_PREFIX + r"(?:Exe\s+build|Build\s+date)\s*:\s*.*\((\d+)\)\s*$", re.I)
+GAME_PATH = re.compile(CONSOLE_PREFIX + r"(?:dll\s+pathname|gamedll\s+path(?:name)?)\s*:\s*(.+?)\s*$", re.I)
+# Classic and Metamod-R's static list truncate description/file columns.
+# Match the status column after the known description, not any RUN token.
+PLUGIN_ROW = re.compile(CONSOLE_PREFIX + r"\[\s*\d+\s*\]\s+Rust Runtime Au(?:dit)?\s+"
+                        r"(RUN|RUNNING|PAUS|PAUSED|FAIL|BADF|OPEN|INFO|EMPT|UNK\d+)\s+\S+\s+"
+                        r"(?:libmetamod_audit(?:\.so)?|metamod_audit\.dll?)(?=\s|$)", re.I)
 SANITIZER = re.compile(r"(?:Address|Leak|UndefinedBehavior|Thread|Memory)Sanitizer\b|\bruntime error:", re.I)
 CRASH = re.compile(r"segmentation fault|access violation|Host_Error|fatal signal|core dumped", re.I)
 CONSOLE_EVIDENCE = re.compile(
-    r"Protocol version|Exe version|Exe build|Build date|Build from|ReHLDS version|Metamod(?:[- ]R)?\s+(?:version|build:|from:|v?\d)"
-    r"|dll pathname|gamedll path|Rust Runtime Audit|metamod_audit\.(?:so|dll)", re.I
+    r"Protocol\s+version|Exe\s+version|Exe\s+build|Build\s+date|Build\s+from|ReHLDS\s+version|Metamod(?:[- ]R)?\s+(?:version|build:|from:|v?\d)"
+    r"|dll\s+pathname|gamedll\s+path|Rust Runtime Au|metamod_audit", re.I
 )
 
 
@@ -27,9 +34,9 @@ def linux_mappings(pid, expected):
         named = set()
         with Path(f"/proc/{pid}/maps").open(encoding="utf-8", errors="replace") as stream:
             for line in stream:
-                _, _, _, device, inode, *pathname = line.rstrip("\n").split(maxsplit=5)
+                _, permissions, _, device, inode, *pathname = line.rstrip("\n").split(maxsplit=5)
                 major, minor = (int(value, 16) for value in device.split(":"))
-                if inode != "0":
+                if inode != "0" and "x" in permissions:
                     present.add((major, minor, int(inode)))
                     if pathname and pathname[0].startswith("/"):
                         named.add((pathname[0], int(inode)))
@@ -47,6 +54,15 @@ def linux_mappings(pid, expected):
         return result
     except (OSError, ValueError):
         return {}
+
+
+def windows_path(path):
+    path = ntpath.normcase(ntpath.normpath(path))
+    if path.startswith("\\\\?\\unc\\"):
+        return "\\\\" + path[8:]
+    if path.startswith("\\\\?\\"):
+        return path[4:]
+    return path
 
 
 def windows_mappings(pid, expected):
@@ -85,12 +101,12 @@ def windows_mappings(pid, expected):
             return {}
         paths = set()
         while True:
-            paths.add(ntpath.normcase(ntpath.normpath(entry.path)))
+            paths.add(windows_path(entry.path))
             if not advance(handle, ctypes.byref(entry)):
                 if ctypes.get_last_error() != 18:  # ERROR_NO_MORE_FILES
                     return {}
                 break
-        return {name: {str(path): ntpath.normcase(ntpath.normpath(str(path))) in paths for path in files}
+        return {name: {str(path): windows_path(str(path)) in paths for path in files}
                 for name, files in expected.items()}
     finally:
         kernel.CloseHandle(handle)
@@ -102,12 +118,14 @@ def identity(runtime, lines, events, mappings):
     root = runtime.get("staged_root")
     windows = runtime.get("os") == "windows"
     path_ops = ntpath if windows else os.path
+    normalize = windows_path if windows else os.path.normpath
     managers = {("metamod-r" if name.lower().endswith(("-r", " r")) else "classic", version)
                 for line in lines for name, version in MANAGER.findall(line)}
-    engine_tokens = {(name.lower(), version) for line in lines for name, version in ENGINE.findall(line)}
+    engine_tokens = {(" ".join(name.lower().split()), version + variant)
+                     for line in lines for name, version, variant in ENGINE.findall(line)}
     engine_tokens.update(("exe build", build) for line in lines for build in BUILD.findall(line))
-    plugin_listed = any(PLUGIN_ROW.search(line) and re.search(r"\b(?:RUN|RUNNING)\b", line, re.I)
-                        for line in lines)
+    statuses = {status.upper() for line in lines for status in PLUGIN_ROW.findall(line)}
+    plugin_listed = bool(statuses & {"RUN", "RUNNING"})
     plugin_replied = any(event["kind"] == "status" for event in events)
     game_paths = [path.strip(' "\'') for line in lines for path in GAME_PATH.findall(line)]
     results = {}
@@ -142,19 +160,24 @@ def identity(runtime, lines, events, mappings):
                 reasons.append("conflicting Metamod versions in console output")
             implementation_ok = expected_family in families
         elif name == "gamedll":
-            expected = path_ops.normcase(path_ops.normpath(path_ops.join(root, config["binary"]))) if root and config else None
-            absolute = {path_ops.normcase(path_ops.normpath(path)) for path in game_paths if path_ops.isabs(path)}
+            expected = normalize(path_ops.join(root, config["binary"])) if root and config.get("binary") else None
+            absolute = {normalize(path) for path in game_paths
+                        if path_ops.isabs(path) and (not windows or ntpath.splitdrive(path)[0])}
             if expected and absolute - {expected}:
                 reasons.append("reported GameDLL path differs from staged file")
             implementation_ok = mapped_ok or (plugin_replied and expected is not None and expected in absolute)
         else:
             implementation_ok = plugin_replied and (mapped_ok or plugin_listed)
+            if statuses - {"RUN", "RUNNING"}:
+                reasons.append("the audit plugin has a non-running Metamod status")
 
         expected_version = config.get("console_version")
         if expected_version is None and name in {"engine", "metamod"}:
             supplied = config.get("version", "")
             if re.fullmatch(r"v?\d+(?:[.+_-][0-9A-Za-z]+)*", supplied):
                 expected_version = supplied.removeprefix("v")
+        if name == "engine" and expected_version and "/" not in expected_version:
+            tokens = {value.split("/", 1)[0] for value in tokens}
         if expected_version and tokens and expected_version not in tokens:
             reasons.append(f"expected console version {expected_version} was not observed")
         if mapped and not mapped_ok:
@@ -173,5 +196,5 @@ def identity(runtime, lines, events, mappings):
     results["engine"]["version_fields"] = sorted(engine_tokens)
     results["metamod"]["version_banners"] = sorted(managers)
     results["gamedll"]["reported_paths"] = game_paths
-    results["plugin"].update(listed_running=plugin_listed, protocol_reply=plugin_replied)
+    results["plugin"].update(listed_running=plugin_listed, listed_statuses=sorted(statuses), protocol_reply=plugin_replied)
     return results

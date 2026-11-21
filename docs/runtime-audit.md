@@ -130,3 +130,26 @@ Historical comparisons track process exits, shutdown method, protocol loss, sani
 ## Native fixture evidence
 
 The C++ loader emits `MM_AUDIT_NATIVE` records after selected assertions complete. These carry stable `native.*.vN` identifiers for bounded command snapshots, hook-result behavior, reentrant entity operations, deferred delivery, and shutdown dispatch. A crash can leave only a partial transcript. Record the loader's actual exit status in the runtime JSON and import the complete transcript with `runner.py import ... --native-fixture`. The fixture rows are stored as `native_fixture_results`, and plugin callbacks observed by that loader are scoped as synthetic as well. They do not satisfy the identity checks or compatibility probes for a real server. The native loader's adversarial checks exercise SDK handling under controlled FFI conditions. Live-server observations leave pointer readability, unseen native reentry, registration ownership, arena retirement, and hook-result storage lifetime as host assumptions.
+
+## First live baseline on Linux i686
+
+1. Use a disposable, locally provisioned Valve HLDS tree with stock Ricochet and clean test configuration. Install the classic Metamod x86 binary in that tree. Keep the stock GameDLL in its own location. Confirm the launcher, engine module, Metamod, and GameDLL are ELF32 i386 files with `file` or `readelf -h`. Confirm the 32-bit loader and shared dependencies are available.
+2. Copy [the single-row example](../verify/audit/linux-hlds-classic-stock.example.json) outside the installation. Replace the installation path, placeholders, and filenames with the actual files. Check `version` and `meta version` on your provisioned build. For split engines, list the actual loaded engine module in `engine.modules`. The sample uses the numeric HLDS build from `Exe build` and the release token from `meta version`. Record the source build of the GameDLL independently and pin SHA-256 values if you need repeatable artifact selection.
+3. Run the fixture verification and the one selected live row from the repository root. Use new output directories outside the installation.
+
+   ```sh
+   bash verify/audit/collect-native.sh ./target/audit-native-first linux-i686-local
+   python3 verify/audit/runner.py run /path/to/local/linux-baseline.json ./target/audit-live-first \
+     --only linux-hlds-classic-stock --build
+   ```
+
+4. Check `report.json` for four corroborated runtime identities, the expected hashes, complete protocol, and observed deactivation and activation for the repeated map itinerary. Review `stdout.log` and `stderr.log` for real command responses and shutdown observations. If console transport fails, use `--prepare-only` and the manual console procedure. Treat unavailable module evidence or absent callbacks as a coverage gap. Run with `--client-wait` to exercise the documented join, disconnect, and same-slot reconnect sequence.
+5. Repeat with the same files for a historical baseline. To expand coverage, add a distinct row for ReHLDS with classic Metamod, then ReHLDS with Metamod-R. Configure versions and paths from each test installation. Run separate stock and `ricochet-updated` rows with their own GameDLL binaries and hashes. The template also includes experimental HLDS with Metamod-R and the Windows x86 counterparts. Absence of a runnable row leaves that combination unverified.
+
+The [console fixture provenance](../verify/audit/fixtures/README.md) distinguishes a third-party HLDS excerpt from transcripts constructed from upstream ReHLDS and Metamod source. Those inputs exercise parsing, including truncated classic plugin-list columns and Win32 path spelling. They are separate from live compatibility results.
+
+## CI evidence and comparison exit status
+
+Hosted Linux ABI jobs archive their loader and combined sanitizer transcripts with the JSONL and aggregate reports. Windows x86 archives the equivalent ABI and loader transcript and runs the Toolhelp test with the installed Python. The strict importer requires all six expected native probe IDs exactly once, a complete audit-plugin command protocol, and both shutdown records. Loader failures and incomplete evidence remain visible even when some assertions completed. The native evidence jobs use the local C++ loader and require no GoldSrc installation.
+
+Comparison JSON separates **severity**, **comparability**, and **attribution**. Historical failure or coverage loss exits with status 1, including a newly failing probe across host configuration drift. An allowance records the expected difference and its rationale. The original result, evidence, and severity still affect the exit status. Host drift limits attribution and cannot establish an SDK regression. Matrix comparisons also surface each failing row independently of row order. Invalid comparison input exits with status 2.

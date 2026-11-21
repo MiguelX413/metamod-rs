@@ -1,12 +1,17 @@
 import json
+import mmap
 import os
 from pathlib import Path
 import platform
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 import runner
+
+FIXTURES = Path(__file__).with_name("fixtures")
 
 
 def wire(seq, kind, **fields):
@@ -68,7 +73,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(verified["metamod"]["result"], "PASS")
         self.assertEqual(verified["gamedll"]["result"], "PASS")
         self.assertEqual(verified["plugin"]["result"], "INCONCLUSIVE")
-        listed = runner.identity(runtime, lines + ["[ 1] Rust Runtime Audit RUN"], events, mappings)
+        listed = runner.identity(runtime, lines + ["[ 1] Rust Runtime Au  RUN  -  libmetamod_audit  v0.1.0 ini Start Never"], events, mappings)
         self.assertEqual(listed["plugin"]["result"], "PASS")
         contradicted = runner.identity(runtime, lines + ["ReHLDS version: 3.14.0.857",
                                        "Metamod-r version 1.3.0.149", "dll pathname: /elsewhere/updated.so"],
@@ -77,6 +82,41 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(contradicted[name]["result"], "FAIL")
         self.assertEqual(runner.identity(runtime, ["Exe version 1.1.2.8"], events, mappings)
                          ["engine"]["result"], "FAIL")
+
+    def test_upstream_derived_console_formats(self):
+        # Exercise the same filtering that runs before identity inference.
+        def lines(*files):
+            return runner.read_events([FIXTURES / file for file in files])[4]
+
+        events = [{"kind": "status"}]
+        mapped = {"engine": {"engine": True}, "metamod": {"manager": True}}
+        classic = {"os": "linux", "staged_root": "/stage", "components": {
+            "engine": {"implementation": "Valve HLDS", "version": "2013 build",
+                       "console_version_field": "exe build", "console_version": "6153"},
+            "metamod": {"implementation": "alliedmodders/metamod-hl1", "version": "1.21.1-am"},
+            "gamedll": {"binary": "ricochet/dlls/ricochet.so"},
+        }}
+        old_lines = lines("hlds-captured.txt", "classic-synthetic.txt")
+        self.assertEqual({x["result"] for x in runner.identity(classic, old_lines, events, mapped).values()}, {"PASS"})
+        classic["components"]["engine"].update(console_version_field="exe version", console_version="1.1.2.2/Stdio")
+        self.assertEqual(runner.identity(classic, old_lines, events, mapped)["engine"]["result"], "PASS")
+        self.assertEqual(runner.identity(classic, old_lines, events, {})["engine"]["result"], "INCONCLUSIVE")
+        noisy = ["say Rust Runtime Audit RUN",
+                 " [2] Unrelated Plugin RUN - libmetamod_audit.so v1 ini Start Never",
+                 " [3] Rust Runtime Audit RUN - libmetamod_audit.so.bak v1 ini Start Never"]
+        self.assertEqual(runner.identity(classic, noisy, events, {})["plugin"]["result"], "INCONCLUSIVE")
+        paused = [line.replace("  RUN  ", "  PAUS ") for line in old_lines]
+        self.assertEqual(runner.identity(classic, paused, events, mapped)["plugin"]["result"], "FAIL")
+
+        modern = {"os": "windows", "staged_root": r"c:\stage", "components": {
+            "engine": {"implementation": "ReHLDS", "version": "3.14.0.857-dev"},
+            "metamod": {"implementation": "Metamod-R", "version": "1.3.0.149"},
+            "gamedll": {"binary": r"ricochet\dlls\ricochet_updated.dll"},
+        }}
+        new_lines = lines("rehlds-metamod-r-synthetic.txt")
+        new_lines.append("Metamod-r version 14:20:03 Nov 20 2026")
+        self.assertEqual({x["result"] for x in runner.identity(modern, new_lines, events, mapped).values()}, {"PASS"})
+        self.assertEqual(runner.identity(classic, new_lines, events, mapped)["metamod"]["result"], "FAIL")
 
     def test_native_evidence_remains_separate_and_protocol_detects_loss(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -166,16 +206,114 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(runner.compare(baseline, report("FAIL"), [])[0]["category"], "regression")
         self.assertEqual(runner.compare(baseline, report("SKIP"), [])[0]["category"], "coverage loss")
         allowance = {"runtime": "fixture", "test": "a.v1", "before": "PASS", "after": "SKIP", "reason": "fixture disabled"}
-        self.assertEqual(runner.compare(baseline, report("SKIP"), [allowance])[0]["category"], "expected")
+        annotated = runner.compare(baseline, report("SKIP"), [allowance])[0]
+        self.assertEqual((annotated["category"], annotated["severity"]), ("expected", "coverage loss"))
+
+    def test_comparison_cli_fails_through_drift_and_allowance(self):
+        def run(name, sha, status):
+            return {"runtime": {"id": name, "components": {"engine": {"sha256": sha}}},
+                    "tests": [{"test": "a.v1", "result": status, "observed": "raw evidence"}]}
+
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            baseline, candidate, rules = (folder / name for name in ("baseline.json", "candidate.json", "rules.json"))
+            runner.dump(baseline, {"runs": [run("host", "old", "PASS")]})
+            runner.dump(candidate, {"runs": [run("host", "new", "FAIL")]})
+            command = [sys.executable, runner.__file__, "compare", str(baseline), str(candidate)]
+            unfiltered = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(unfiltered.returncode, 1, unfiltered.stderr)
+            self.assertEqual(json.loads(unfiltered.stdout)[-1]["category"], "incomparable probe change")
+            runner.dump(rules, [{"runtime": "host", "test": "a.v1", "before": "PASS", "after": "FAIL",
+                                 "reason": "different vendor build"}])
+            annotated = subprocess.run(command + ["--allowances", str(rules)], capture_output=True, text=True)
+            self.assertEqual(annotated.returncode, 1, annotated.stderr)
+            change = json.loads(annotated.stdout)[-1]
+            self.assertEqual((change["category"], change["severity"]), ("expected", "failure"))
+            self.assertEqual(change["comparability"], "configuration changed")
+            self.assertEqual(change["after_evidence"], "raw evidence")
+            # Matrix failure must be actionable even without a right-hand candidate.
+            runner.dump(candidate, {"runs": [run("failing", "new", "FAIL"), run("passing", "old", "PASS")]})
+            matrix = subprocess.run(command[:-2] + [str(candidate)], capture_output=True, text=True)
+            self.assertEqual(matrix.returncode, 1, matrix.stderr)
+            self.assertTrue(any(row.get("runtime") == "failing" and row.get("severity") == "failure"
+                                for row in json.loads(matrix.stdout)))
+            runner.dump(baseline, {"runs": [{**run("host", "old", "PASS"), "protocol_complete": True, "exit_status": 0}]})
+            runner.dump(candidate, {"runs": [{**run("host", "old", "PASS"), "protocol_complete": False, "exit_status": -11,
+                                               "sanitizer_diagnostics": ["ERROR: AddressSanitizer: fault"]}]})
+            unhealthy = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(unhealthy.returncode, 1, unhealthy.stderr)
+            fields = {row["field"] for row in json.loads(unhealthy.stdout) if row["severity"] == "failure"}
+            self.assertEqual(fields, {"protocol_complete", "exit_status", "sanitizer_diagnostics"})
+
+    def test_strict_native_import_requires_complete_unique_evidence(self):
+        def native(test, observed="assertion completed"):
+            return runner.NATIVE_PREFIX + json.dumps({"schema_version": 1, "test": test, "result": "PASS",
+                                                      "observed": observed}).encode() + b"\n"
+
+        plugin = (wire(1, "ready", submitted=True) + wire(2, "status") + wire(3, "suite_complete", suite="all")
+                  + wire(4, "report", complete=True))
+        shutdown = b"".join(wire(seq, "result", test=test, result="PASS", expected="shutdown", observed="ran")
+                            for seq, test in ((5, "shutdown.v1"), (6, "shutdown.drop.v1")))
+        records = [native(test) for test in sorted(runner.NATIVE_SUITE)]
+        cases = [
+            ("complete", b"".join(records), shutdown, 0),
+            ("missing", b"".join(records[:-1]), shutdown, 1),
+            ("duplicate", b"".join(records + records[:1]), shutdown, 1),
+            ("conflicting", b"".join(records) + native(sorted(runner.NATIVE_SUITE)[0], "different assertion"), shutdown, 1),
+            ("unexpected", b"".join(records) + native("native.other.v1"), shutdown, 1),
+            ("malformed", b"".join(records) + b"MM_AUDIT_NATIVE {broken\n", shutdown, 1),
+            ("missing-shutdown", b"".join(records), b"", 1),
+            ("reversed-shutdown", b"".join(records),
+             wire(5, "result", test="shutdown.drop.v1", result="PASS", expected="shutdown", observed="ran")
+             + wire(6, "result", test="shutdown.v1", result="PASS", expected="shutdown", observed="ran"), 1),
+            ("sanitizer-after-report", b"".join(records), shutdown + b"ERROR: AddressSanitizer: fault\n", 1),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            runner.dump(folder / "runtime.json", {"id": "fixture", "exit_status": 0})
+            for name, assertions, stderr, expected_exit in cases:
+                with self.subTest(name=name):
+                    (folder / "out.log").write_bytes(plugin + assertions)
+                    (folder / "err.log").write_bytes(stderr)
+                    proc = subprocess.run([sys.executable, runner.__file__, "import", str(folder / "runtime.json"),
+                                           str(folder / name), str(folder / "err.log"), str(folder / "out.log"),
+                                           "--native-fixture", "--require-native-suite"], capture_output=True, text=True)
+                    self.assertEqual(proc.returncode, expected_exit, proc.stderr)
+                    report = runner.load(folder / name / "report.json")["runs"][0]
+                    self.assertEqual(report["evidence_scope"], "native-fixture")
+                    if name == "complete":
+                        self.assertTrue(report["protocol_complete"])
+                        self.assertEqual(set(by_test(report["native_fixture_results"])), runner.NATIVE_SUITE)
+
+    def test_unknown_probe_cannot_be_aggregated_as_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            log = folder / "log"
+            log.write_bytes(wire(1, "result", test="invented.v1", result="PASS", expected="anything", observed="claimed"))
+            run = runner.aggregate(folder, {"id": "runtime"}, {"executed": True, "run_id": "run"}, [log])
+            self.assertNotIn("invented.v1", by_test(run["tests"]))
+            self.assertIn("unknown probe identifier", run["protocol_warnings"][0])
+            self.assertIn("invented.v1", (folder / "events.jsonl").read_text())
+
+
+@unittest.skipUnless(platform.system() == "Windows", "Windows Toolhelp module enumeration")
+class WindowsMappingTests(unittest.TestCase):
+    def test_module_snapshot_matches_executable_path(self):
+        executable = Path(sys.executable).resolve(strict=True)
+        mapped = runner.windows_mappings(os.getpid(), {"engine": [executable]})
+        self.assertTrue(mapped["engine"][str(executable)])
 
 
 @unittest.skipUnless(platform.system() == "Linux", "fake launcher uses a POSIX shebang")
 class ExecutionTests(unittest.TestCase):
     def test_linux_mappings_use_file_identity(self):
         executable = Path("/proc/self/exe").resolve(strict=True)
-        with tempfile.NamedTemporaryFile() as unmapped:
-            other = Path(unmapped.name)
-            mapped = runner.linux_mappings(os.getpid(), {"engine": [executable], "plugin": [other]})
+        with tempfile.NamedTemporaryFile() as data:
+            other = Path(data.name)
+            data.write(b"x")
+            data.flush()
+            with mmap.mmap(data.fileno(), 1):
+                mapped = runner.linux_mappings(os.getpid(), {"engine": [executable], "plugin": [other]})
         self.assertTrue(mapped["engine"][str(executable)])
         self.assertFalse(mapped["plugin"][str(other)])
 
@@ -271,6 +409,19 @@ for line in sys.stdin:
             self.assertEqual(crash["exit_status"], 19)
             self.assertTrue(crash["protocol_complete"])
             self.assertIn('\"kind\": \"ready\"', (crash_output / "events.jsonl").read_text())
+
+            interrupted_output = root / "interrupted-map"
+            interrupted_output.mkdir()
+            line = 'emit("result", test="map.activate.v1", result="PASS", expected="activation", observed="fake callback")'
+            engine.write_text(engine.read_text().replace(line, line + "; sys.exit(20)"))
+            with patch.object(runner, "check_binary"):
+                interrupted = runner.run_one(spec, root, interrupted_output, "fixture-run", False, 0)
+            self.assertEqual(interrupted["exit_status"], 20)
+            self.assertEqual(interrupted["execution"], "INCOMPLETE")
+            transition, = interrupted["map_transitions"]
+            self.assertTrue(transition["deactivated"])
+            self.assertTrue(transition["callback_sequences"])
+            self.assertEqual(transition["result"], "INCONCLUSIVE")
 
 
 if __name__ == "__main__":

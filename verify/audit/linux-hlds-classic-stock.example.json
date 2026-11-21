@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "runtimes": [
+    {
+      "id": "linux-hlds-classic-stock",
+      "os": "linux",
+      "installation": "/path/to/disposable/hlds-fixture",
+      "mod": "ricochet",
+      "engine": {
+        "implementation": "Valve HLDS",
+        "version": "SET_EXACT_VERSION",
+        "console_version_field": "exe build",
+        "console_version": "SET_CONSOLE_BUILD_NUMBER",
+        "binary": "hlds_linux",
+        "modules": ["engine_i486.so"]
+      },
+      "metamod": {
+        "implementation": "alliedmodders/metamod-hl1",
+        "version": "SET_EXACT_VERSION",
+        "console_version": "SET_META_VERSION_TOKEN",
+        "binary": "ricochet/addons/metamod/dlls/metamod_i386.so"
+      },
+      "gamedll": {
+        "implementation": "Valve stock Ricochet",
+        "version": "SET_EXACT_VERSION",
+        "binary": "ricochet/dlls/ricochet.so"
+      },
+      "maps": ["rc_arena", "rc_deathmatch"],
+      "map_cycles": 2,
+      "port": 27045,
+      "timeout_seconds": 60
+    }
+  ]
+}

@@ -40,6 +40,17 @@ CONTRACTS = {
     "ffi.shutdown_order.v1": "host keeps callback code and active hook globals live until native frames unwind",
 }
 OBSERVATION_TESTS = {"lag.post.v1", "player.identity.v1", "trace.line.v1", "trace.hull.v1"}
+MAP_PROBES = {"map.deactivate.v1", "map.activate.v1", "map.order.v1", "map.stale.v1"}
+NATIVE_SUITE = {
+    "native.command.snapshot_limits.v1",
+    "native.dispatch.reentrant.v1",
+    "native.entity.reentrant_map.v1",
+    "native.hook.result.v1",
+    "native.shutdown.dispatch_revoked.v1",
+    "native.shutdown.reentrant_trace.v1",
+}
+OBSERVATION_RANK = {"SKIP": 0, "INCONCLUSIVE": 1, "PASS": 2, "FAIL": 3}
+PROBE_ID = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*\.v[1-9][0-9]*")
 
 
 def dump(path, value):
@@ -86,6 +97,8 @@ def parse_event(line):
                     for k in ("test", "result", "expected", "observed"))
                 or event["result"] not in STATUSES):
             return None
+        if not PROBE_ID.fullmatch(event["test"]):
+            return None
     elif kind not in {"ready", "status", "report", "usage", "suite_complete", "limit"}:
         return None
     elif kind == "ready" and type(event.get("submitted")) is not bool:
@@ -104,6 +117,7 @@ def read_events(paths):
     versions = []
     conflicts = []
     native = {}
+    known = catalog()
     def warn(message):
         if len(warnings) < 32:
             warnings.append(message)
@@ -115,6 +129,8 @@ def read_events(paths):
                 event = parse_event(line)
                 if event:
                     seq = event["seq"]
+                    if event["kind"] == "result" and event["test"] not in known:
+                        warn(f"{path.name}: unknown probe identifier at sequence {seq}: {event['test'][:120]}")
                     if seq in events:
                         warn(f"{path.name}: {'duplicate' if events[seq] == event else 'conflicting'} record at sequence {seq}")
                         if events[seq] != event and len(conflicts) < 32:
@@ -130,19 +146,23 @@ def read_events(paths):
                         test = result["test"]
                         if (not line.endswith(b"\n") or type(result["schema_version"]) is not int
                                 or result["schema_version"] != SCHEMA or result["result"] != "PASS"
-                                or not re.fullmatch(r"native\.[a-z_.]+\.v\d+", test)
-                                or not isinstance(result["observed"], str) or test in native):
+                                or not isinstance(test, str) or not test.startswith("native.") or not PROBE_ID.fullmatch(test)
+                                or not isinstance(result["observed"], str) or not result["observed"].strip()):
                             raise ValueError("invalid native record")
-                        if len(native) < 128:
+                        if test in native:
+                            previous = {key: value for key, value in native[test].items() if key != "source"}
+                            warn(f"{path.name}: {'duplicate' if previous == result else 'conflicting'} native record for {test[:120]}")
+                        elif len(native) < 128:
                             native[test] = {**result, "source": "native-harness"}
+                        else:
+                            warn(f"{path.name}: native fixture record budget exceeded")
                     except (KeyError, TypeError, ValueError, UnicodeError, RecursionError):
                         warn(f"{path.name}: invalid or duplicate native fixture record")
                 decoded = line[:2048].decode("utf-8", "replace").strip()
                 if (SANITIZER.search(decoded) or CRASH.search(decoded)) and len(diagnostics) < 128:
                     diagnostics.append(decoded)
-                if CONSOLE_EVIDENCE.search(decoded):
-                    if len(versions) < 32:
-                        versions.append(decoded)
+                if CONSOLE_EVIDENCE.search(decoded) and len(versions) < 32 and decoded not in versions:
+                    versions.append(decoded)
             if not remaining and stream.read(1):
                 warn(f"{path.name}: log exceeded capture budget")
     if events and len(events) != max(events):
@@ -158,8 +178,11 @@ def findings(events, executed, manual, unsupported=None):
         if event["kind"] != "result":
             continue
         test = event["test"]
+        if test not in tests:
+            continue
         history.setdefault(test, []).append(event["seq"])
-        if results.get(test, {}).get("result") != "FAIL":
+        previous = results.get(test, {}).get("result")
+        if previous != "FAIL" and OBSERVATION_RANK[event["result"]] >= OBSERVATION_RANK.get(previous, -1):
             results[test] = {**event, "source": "plugin"}
     for item in manual:
         test = item["test"]
@@ -206,6 +229,12 @@ def aggregate(output, runtime, metadata, logs, manual=()):
     scope = runtime.get("evidence_scope", "runtime")
     if native and scope != "native-fixture":
         warnings.append("native fixture records present in a runtime transcript")
+    if metadata.get("require_native_suite"):
+        observed = {item["test"] for item in native}
+        if missing := NATIVE_SUITE - observed:
+            warnings.append("missing native fixture evidence: " + ", ".join(sorted(missing)))
+        if unexpected := observed - NATIVE_SUITE:
+            warnings.append("unexpected native fixture evidence: " + ", ".join(sorted(unexpected)))
     if any(event["kind"] == "limit" for event in events):
         warnings.append("plugin event budget reached; later observations may be missing")
     records = [(event, False) for event in events] + [(event, True) for event in conflicts]
@@ -228,8 +257,15 @@ def aggregate(output, runtime, metadata, logs, manual=()):
                        if event["kind"] == "status" and event["seq"] > ready_seq), MAX_EVENTS)
     suite_seq = next((event["seq"] for event in events if event["seq"] > status_seq
                       and event["kind"] == "suite_complete" and event.get("suite") == "all"), MAX_EVENTS)
+    report_seq = next((event["seq"] for event in events if event["seq"] > suite_seq and event["kind"] == "report"), None)
+    if metadata.get("require_native_suite"):
+        shutdown = {test: [event["seq"] for event in events if event.get("test") == test and event.get("result") == "PASS"]
+                    for test in ("shutdown.v1", "shutdown.drop.v1")}
+        hook, destructor = shutdown["shutdown.v1"], shutdown["shutdown.drop.v1"]
+        if report_seq is None or len(hook) != 1 or len(destructor) != 1 or not report_seq < hook[0] < destructor[0]:
+            warnings.append("missing, repeated, or out-of-order audit plugin shutdown evidence in native fixture")
     protocol_complete = (not warnings and not metadata.get("capture_errors") and not metadata.get("truncated_streams")
-                         and any(event["seq"] > suite_seq and event["kind"] == "report" for event in events))
+                         and report_seq is not None)
     runtime_identity = identity(runtime, versions, events, metadata.get("mapped_artifacts", {})) if scope == "runtime" else {}
     return {
         "schema_version": SCHEMA, "runtime": runtime, **metadata,
@@ -644,23 +680,27 @@ def run_one(spec, config_dir, output, run_id, allow_build, client_wait, prepare_
                             metadata["resource_samples"].append(sample_rss(process, f"before-change:{index}:{name}"))
                             console.send(f"changelevel {name}")
                             activation = console.wait("result", timeout, after=before, test="map.activate.v1", result="PASS")
-                            lifecycle = [event for event in console.between(before, activation["seq"])
-                                         if event.get("test") in {"map.deactivate.v1", "map.activate.v1", "map.stale.v1"}]
-                            transition["callback_sequences"] = [event["seq"] for event in lifecycle]
+                            change_start = before
+                            lifecycle = console.between(change_start, activation["seq"])
+                            transition["callback_sequences"] = [event["seq"] for event in lifecycle
+                                                               if event.get("test") in MAP_PROBES]
                             transition["deactivated"] = any(event.get("test") == "map.deactivate.v1" and
                                                             event["result"] == "PASS" for event in lifecycle)
-                            if transition["deactivated"]:
-                                transition["result"] = "PASS"
                         before = console.sequence()
                         console.send('mm_audit_run all "audit two words"')
                         suite = console.wait("suite_complete", timeout, after=before, suite="all")
                         if index:
-                            related = [event for event in console.between(activation["seq"], suite["seq"])
-                                       if event.get("test") in {"map.order.v1", "map.stale.v1"}]
-                            transition["callback_sequences"].extend(event["seq"] for event in related)
+                            related = [event for event in console.between(change_start, suite["seq"])
+                                       if event.get("test") in MAP_PROBES]
+                            transition["callback_sequences"] = [event["seq"] for event in related]
+                            transition["suite_completed"] = True
                             transition["previous_handle_checks"] = [
                                 event["result"] for event in related if event["test"] == "map.stale.v1"
                             ]
+                            if any(event["result"] == "FAIL" for event in related):
+                                transition["result"] = "FAIL"
+                            elif transition["deactivated"]:
+                                transition["result"] = "PASS"
                         metadata["resource_samples"].append(sample_rss(process, f"suite:{index}:{name}"))
                     if client_wait:
                         print(f"{runtime['id']}: connect to 127.0.0.1:{port} now; waiting {client_wait} seconds", flush=True)
@@ -706,6 +746,11 @@ def check_allowances(allowances):
             raise ValueError("every comparison allowance requires a test, transition, and explicit reason")
 
 
+def comparison_probes(run):
+    manual = [test for test in run.get("contract_findings", []) if "test" in test and "result" in test]
+    return run["tests"] + run.get("native_fixture_results", []) + manual
+
+
 def compare(baseline, candidate, allowances):
     check_allowances(allowances)
 
@@ -714,7 +759,7 @@ def compare(baseline, candidate, allowances):
 
     def indexed(report):
         return {(*key, test["test"]): test for key, run in runs(report).items()
-                for test in run["tests"] + run.get("native_fixture_results", [])}
+                for test in comparison_probes(run)}
     old_runs, new_runs = runs(baseline), runs(candidate)
     differences = []
     drift = set()
@@ -724,7 +769,8 @@ def compare(baseline, candidate, allowances):
         def change(field, before, after, category):
             if before != after:
                 differences.append({"runtime": runtime, "evidence_scope": scope, "field": field,
-                                    "before": before, "after": after, "category": category})
+                                    "before": before, "after": after, "category": category,
+                                    **comparison_status(category, key in drift)})
 
         def host_config(run):
             info = run.get("runtime", {})
@@ -747,24 +793,29 @@ def compare(baseline, candidate, allowances):
                       "truncated_streams", "crash_dumps"):
             before, after = old.get(field), new.get(field)
             if field == "protocol_complete":
-                worse = before is True and after is False
+                expects_protocol = scope == "runtime" or new.get("require_native_suite")
+                worse = after is False and (before is True or (not old and new.get("executed") and expects_protocol))
             elif field == "exit_status":
                 worse = after not in (0, None)
             elif field == "execution":
-                worse = before in {"COMPLETE", "IMPORTED"} and after not in {"COMPLETE", "IMPORTED"}
+                worse = (before in {"COMPLETE", "IMPORTED"} and after not in {"COMPLETE", "IMPORTED"}
+                         or not old and after == "INCOMPLETE")
             elif field == "shutdown_method":
                 worse = before == "quit" and after not in {"quit", None}
             elif field in {"sanitizer_diagnostics", "crash_diagnostics", "diagnostics"}:
                 worse = bool(diagnostic_keys(after) - diagnostic_keys(before))
             else:
                 worse = bool(set(after or []) - set(before or []))
-            change(field, before, after, "regression" if worse else "execution difference")
+            evidence_lost = bool(new) and after is None and (
+                (field == "protocol_complete" and before is True) or (field == "exit_status" and before == 0)
+            )
+            change(field, before, after, "regression" if worse else "coverage loss" if evidence_lost else "execution difference")
         def observed_identity(run):
             root = run.get("runtime", {}).get("staged_root", "")
             def normalized(path):
                 return path.replace(root, "<stage>", 1) if root and path.startswith(root) else path
             return {name: {**{field: info.get(field) for field in ("result", "observed_versions", "version_banners",
-                                                                  "listed_running", "protocol_reply")},
+                                                                  "version_fields", "listed_running", "protocol_reply")},
                            "reported_paths": [normalized(path) for path in info.get("reported_paths", [])],
                            "mappings": {normalized(path): present for path, present in info.get("mapped_artifacts", {}).items()}}
                     for name, info in run.get("runtime_identity", {}).items()}
@@ -776,12 +827,14 @@ def compare(baseline, candidate, allowances):
         def transitions(run):
             return [(item["result"], item.get("previous_handle_checks", [])) for item in run.get("map_transitions", [])]
         old_transitions, new_transitions = transitions(old), transitions(new)
+        lifecycle_failure = any(after[0] == "FAIL" and (index >= len(old_transitions) or old_transitions[index][0] != "FAIL")
+                                for index, after in enumerate(new_transitions))
         lifecycle_loss = (len(new_transitions) < len(old_transitions)
                           or any((before[0] == "PASS" and after[0] != "PASS")
                                  or ("PASS" in before[1] and "PASS" not in after[1])
                                  for before, after in zip(old_transitions, new_transitions)))
         change("map_transitions", old_transitions, new_transitions,
-               "coverage loss" if lifecycle_loss else "lifecycle difference")
+               "regression" if lifecycle_failure else "coverage loss" if lifecycle_loss else "lifecycle difference")
         def rss_delta(run):
             samples = [item["rss_kib"] for item in run.get("resource_samples", [])
                        if item["rss_kib"] is not None]
@@ -799,7 +852,8 @@ def compare(baseline, candidate, allowances):
             if test in OBSERVATION_TESTS and old_item.get("observed") != new_item.get("observed"):
                 differences.append({"runtime": runtime, "evidence_scope": scope, "test": test,
                                     "before": old_item.get("observed"), "after": new_item.get("observed"),
-                                    "category": "observation difference"})
+                                    "category": "observation difference",
+                                    **comparison_status("observation difference", (scope, runtime) in drift)})
             continue
         reason = next((rule["reason"] for rule in allowances
                        if (rule.get("runtime"), rule["test"], rule["before"], rule["after"]) == (runtime, test, old, new)), None)
@@ -809,7 +863,8 @@ def compare(baseline, candidate, allowances):
         differences.append({"runtime": runtime, "evidence_scope": scope, "test": test, "before": old, "after": new,
                             "before_evidence": old_item.get("observed"), "after_evidence": new_item.get("observed"),
                             "category": "expected" if reason else "incomparable probe change" if (scope, runtime) in drift else category,
-                            "unadjusted_category": category, "reason": reason})
+                            "unadjusted_category": category, "reason": reason,
+                            **comparison_status(category, (scope, runtime) in drift)})
     return differences
 
 
@@ -817,6 +872,13 @@ def compare_runtimes(report, allowances):
     check_allowances(allowances)
     runs = report["runs"]
     differences = []
+    # A matrix has no temporal baseline. Surface each failing row even
+    # when it is first, is alone, or fails identically to another row.
+    for run in runs:
+        for delta in compare({"runs": []}, {"runs": [run]}, []):
+            if delta.get("severity") == "failure":
+                differences.append({**delta, "category": "runtime failure", "comparability": "no historical baseline",
+                                    "attribution": "undetermined"})
     for index, left in enumerate(runs):
         for right in runs[index + 1:]:
             if left.get("evidence_scope", "runtime") != right.get("evidence_scope", "runtime"):
@@ -825,12 +887,15 @@ def compare_runtimes(report, allowances):
             # Reuse field-level comparison without treating one runtime
             # as a historical baseline for the other.
             aligned = {**right, "runtime": {**right["runtime"], "id": left_id}}
-            for delta in compare({"runs": [left]}, {"runs": [aligned]}, []):
+            field_changes = compare({"runs": [left]}, {"runs": [aligned]}, [])
+            drift = any(delta.get("field") == "host_configuration" for delta in field_changes)
+            for delta in field_changes:
                 if "field" in delta:
-                    differences.append({**{k: v for k, v in delta.items() if k != "runtime"},
-                                        "left": left_id, "right": right_id, "category": "runtime difference"})
-            old = {test["test"]: test for test in left["tests"] + left.get("native_fixture_results", [])}
-            new = {test["test"]: test for test in right["tests"] + right.get("native_fixture_results", [])}
+                    differences.append({**{k: v for k, v in delta.items() if k not in {"runtime", "severity", "attribution"}},
+                                        "left": left_id, "right": right_id, "category": "runtime difference",
+                                        **comparison_status("runtime difference", drift)})
+            old = {test["test"]: test for test in comparison_probes(left)}
+            new = {test["test"]: test for test in comparison_probes(right)}
             for test in sorted(old.keys() & new.keys()):
                 before, after = old[test]["result"], new[test]["result"]
                 if before == after:
@@ -838,7 +903,8 @@ def compare_runtimes(report, allowances):
                             and old[test]["observed"] != new[test]["observed"]):
                         differences.append({"left": left_id, "right": right_id, "test": test,
                                             "before": old[test]["observed"], "after": new[test]["observed"],
-                                            "category": "observation difference", "reason": "both probes passed"})
+                                            "category": "observation difference", "reason": "both probes passed",
+                                            **comparison_status("observation difference", drift)})
                     continue
                 reason = next((rule["reason"] for rule in allowances
                                if (rule.get("left"), rule.get("right"), rule["test"], rule["before"], rule["after"])
@@ -847,8 +913,19 @@ def compare_runtimes(report, allowances):
                                     "before": before, "after": after,
                                     "before_evidence": old[test].get("observed"),
                                     "after_evidence": new[test].get("observed"),
-                                    "category": "expected" if reason else "runtime difference", "reason": reason})
+                                    "category": "expected" if reason else "runtime difference", "reason": reason,
+                                    **comparison_status("runtime difference", drift)})
     return differences
+
+
+def comparison_status(category, drift):
+    severity = {"regression": "failure", "coverage loss": "coverage loss"}.get(category, "informational")
+    return {
+        "severity": severity,
+        "comparability": "configuration changed" if drift else "no configuration change detected",
+        "attribution": ("undetermined across configuration change" if drift else "undetermined")
+        if severity != "informational" else None,
+    }
 
 
 def load(path):
@@ -906,6 +983,7 @@ def main():
     imp.add_argument("logs", nargs="+", type=Path)
     imp.add_argument("--manual", type=Path)
     imp.add_argument("--native-fixture", action="store_true", help="import a single native loader transcript")
+    imp.add_argument("--require-native-suite", action="store_true", help="require all native loader probes and the audit plugin protocol")
     diff = sub.add_parser("compare")
     diff.add_argument("baseline", type=Path)
     diff.add_argument("candidate", nargs="?", type=Path)
@@ -922,7 +1000,7 @@ def main():
             changes = (compare(baseline, load(args.candidate), allowances) if args.candidate
                        else compare_runtimes(baseline, allowances))
             print(json.dumps(changes, indent=2))
-            return int(any(change["category"] in {"regression", "coverage loss"} for change in changes))
+            return int(any(change.get("severity") in {"failure", "coverage loss"} for change in changes))
         if args.command == "run":
             config_path = args.config.resolve(strict=True)
             config = load(config_path)
@@ -951,12 +1029,15 @@ def main():
             if args.prepare_only:
                 return int(any(run["execution"] != "PREPARED" for run in runs))
         else:
+            if args.require_native_suite and not args.native_fixture:
+                raise ValueError("--require-native-suite requires --native-fixture")
             runtime = load(args.runtime)
             runtime["evidence_scope"] = "native-fixture" if args.native_fixture else "runtime"
             label(runtime["id"], "runtime ID")
             records = manual_results(args.manual)
             args.output.mkdir(parents=True)
             metadata = {"run_id": run_id, "execution": "IMPORTED", "executed": True,
+                        "require_native_suite": args.require_native_suite,
                         "exit_status": runtime.get("exit_status"), "original_logs": [str(path) for path in args.logs]}
             runs = [aggregate(args.output.resolve(), runtime, metadata, args.logs, records)]
             finish(args.output, run_id, runs)
@@ -964,8 +1045,10 @@ def main():
                        or ((not run["native_fixture_results"] or run["exit_status"] != 0) if run["evidence_scope"] == "native-fixture"
                            else not run["protocol_complete"] or any(identity["result"] != "PASS"
                                                                      for identity in run["runtime_identity"].values()))
+                       or (run.get("require_native_suite") and not run["protocol_complete"])
                        or run["diagnostics"] or run["protocol_warnings"]
                        or run["exit_status"] not in {None, 0}
+                       or any(transition["result"] != "PASS" for transition in run.get("map_transitions", []))
                        or any(test.get("result") == "FAIL" or test.get("manual_conflict")
                               for test in run["tests"] + run["contract_findings"])
                        for run in runs))
