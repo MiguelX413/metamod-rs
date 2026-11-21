@@ -8,6 +8,7 @@ IFS=$'\n\t'
 HERE="${BASH_SOURCE[0]}"
 WORKDIR="${HOME}/ricochet-audit-lab"
 REPO_REF="master"
+AUDIT_PLUGIN=""
 STEAM_USER=""
 UPDATED_DLL=""
 VALVE_VERSION=""
@@ -21,8 +22,8 @@ MAP_CYCLES=2
 CLIENT_WAIT=0
 EXPERIMENTAL=0
 PREPARE_ONLY=0
-SKIP_NATIVE=0
-SKIP_RUST_TESTS=0
+WITH_NATIVE=0
+WITH_RUST_TESTS=0
 SKIP_APT=0
 SKIP_STEAM=0
 KEEP_OLD=1
@@ -41,6 +42,7 @@ Usage: ./ricochet_audit_ubuntu.sh [options]
                                no SteamCMD download, apt install, or server re-provisioning
   --only RUNTIME_ID           Audit only this matrix row (repeatable)
   --failed-only               With --rerun, retry only rows that failed or were incomplete
+  --plugin PATH                Prebuilt Linux i686 metamod-audit .so (required for fresh runs)
   --repo-ref REF               metamod-rs branch/tag/commit (default master)
   --steam-user NAME            Use Steam account instead of anonymous if necessary.
                                SteamCMD handles password/Steam Guard interactively.
@@ -56,9 +58,8 @@ Usage: ./ricochet_audit_ubuntu.sh [options]
   --client-wait SECONDS        Pause for manual client tests, 0..600 (default 0)
   --experimental              Also attempt HLDS + Metamod-R (upstream unsupported)
   --prepare-only              Stage matrix for manually operated consoles
-  --skip-native               Skip strict C++/Rust i686 native loader checks
-                               (skipped checks are never counted as passing)
-  --skip-rust-tests           Skip Rust workspace and Python runner unit tests
+  --with-native               Also build and run strict C++/Rust i686 loader checks
+  --with-rust-tests           Also run Rust workspace and Python runner tests
   --skip-apt                  Do not install Ubuntu packages
   --skip-steam                Reuse already downloaded SteamCMD HLDS files
                                (implicit in --rerun mode)
@@ -69,11 +70,18 @@ x86_64 with network access, disk space, and Steam terms accepted is assumed.
 Steam downloads use app 90 / 'mod ricochet' / 'steam_legacy'. No Valve files
 are redistributed. All game servers default to loopback-only, LAN mode.
 
+Fresh run with a CI artifact:
+  ./ricochet_audit_ubuntu.sh --plugin ./libmetamod_audit.so
+
+The live matrix uses a saved copy of the supplied plugin for every row.
+Rust and native-fixture checks are off by default and build separately
+from --repo-ref when requested.
+
 Rerun examples:
   ./ricochet_audit_ubuntu.sh --rerun                 # latest saved matrix
   ./ricochet_audit_ubuntu.sh --rerun latest --failed-only
   ./ricochet_audit_ubuntu.sh --rerun 20261120T210000Z-1234 \
-    --only linux-rehlds-metamod-r-stock --skip-native
+    --only linux-rehlds-metamod-r-stock
 
 Reruns create a new runs/<timestamp>-<pid> directory. They reuse the saved
 server snapshots, the existing audit plugin, and the pinned SDK checkout.
@@ -84,15 +92,15 @@ HELP
 
 while (($#)); do
   case "$1" in
-    --workdir|--repo-ref|--steam-user|--updated-gamedll|--valve-version|--rehlds-console-version|--classic-console-version|--metamodr-console-version|--rehlds-zip|--metamodr-zip|--classic-zip|--map-cycles|--client-wait)
+    --workdir|--plugin|--repo-ref|--steam-user|--updated-gamedll|--valve-version|--rehlds-console-version|--classic-console-version|--metamodr-console-version|--rehlds-zip|--metamodr-zip|--classic-zip|--map-cycles|--client-wait)
       (($# >= 2)) || { echo "Missing value: $1" >&2; exit 2; }
       key="$1"; val="$2"; shift 2
       case "$key" in
-        --repo-ref|--steam-user|--updated-gamedll|--valve-version|--rehlds-console-version|--classic-console-version|--metamodr-console-version|--rehlds-zip|--metamodr-zip|--classic-zip)
+        --plugin|--repo-ref|--steam-user|--updated-gamedll|--valve-version|--rehlds-console-version|--classic-console-version|--metamodr-console-version|--rehlds-zip|--metamodr-zip|--classic-zip)
           RERUN_DISALLOWED+=("$key");;
       esac
       case "$key" in
-        --workdir) WORKDIR="$val";; --repo-ref) REPO_REF="$val";;
+        --workdir) WORKDIR="$val";; --plugin) AUDIT_PLUGIN="$val";; --repo-ref) REPO_REF="$val";;
         --steam-user) STEAM_USER="$val";; --updated-gamedll) UPDATED_DLL="$val";;
         --valve-version) VALVE_VERSION="$val";;
         --rehlds-console-version) REHLDS_CONSOLE_VERSION="$val";;
@@ -111,8 +119,8 @@ while (($#)); do
     --failed-only) FAILED_ONLY=1; shift;;
     --experimental) EXPERIMENTAL=1; RERUN_DISALLOWED+=(--experimental); shift;;
     --prepare-only) PREPARE_ONLY=1; shift;;
-    --skip-native) SKIP_NATIVE=1; shift;;
-    --skip-rust-tests) SKIP_RUST_TESTS=1; shift;;
+    --with-native) WITH_NATIVE=1; shift;;
+    --with-rust-tests) WITH_RUST_TESTS=1; shift;;
     --skip-apt) SKIP_APT=1; shift;;
     --skip-steam) SKIP_STEAM=1; shift;;
     -h|--help) usage; exit 0;;
@@ -130,6 +138,12 @@ source /etc/os-release
 [[ $CLIENT_WAIT =~ ^[0-9]+$ ]] && ((CLIENT_WAIT <= 600)) || { echo "--client-wait must be 0..600" >&2; exit 2; }
 [[ $REPO_REF =~ ^[A-Za-z0-9._/-]{1,128}$ ]] || { echo "Invalid --repo-ref" >&2; exit 2; }
 (( ! FAILED_ONLY )) || [[ -n $RERUN_SOURCE ]] || { echo "--failed-only requires --rerun" >&2; exit 2; }
+if [[ -z $RERUN_SOURCE ]]; then
+  [[ -n $AUDIT_PLUGIN && -f $AUDIT_PLUGIN && -r $AUDIT_PLUGIN ]] || {
+    echo "Fresh runs require --plugin PATH to a readable prebuilt metamod-audit .so." >&2
+    exit 2
+  }
+fi
 for selected in "${ONLY_RUNTIMES[@]}"; do
   [[ $selected =~ ^[A-Za-z0-9_-]{1,64}$ ]] || { echo "Invalid --only runtime ID: $selected" >&2; exit 2; }
 done
@@ -140,7 +154,7 @@ trap 'echo "ERROR near line $LINENO. Existing files and partial logs are preserv
 
 # A single validation path is used by initial provisioning and by reruns.
 run_native_suite() {
-if (( ! SKIP_NATIVE )); then
+if (( WITH_NATIVE )); then
   say "Running Linux i686 ABI/loader checks with strict native-fixture evidence validation."
   # The repository's collector retains the loader's real exit status, captures
   # its transcript even on failure, and imports it with BOTH --native-fixture
@@ -184,6 +198,14 @@ PY_NATIVE
 fi
 }
 
+run_workspace_tests() {
+if (( WITH_RUST_TESTS )); then
+  say "Running Rust workspace tests and Python audit-runner tests."
+  ( cd "$REPO" && cargo test --workspace --locked )
+  ( cd "$REPO" && python3 -m unittest discover -s verify/audit -v )
+fi
+}
+
 run_matrix_and_summary() {
 say "Running configured actual HLDS/ReHLDS audit matrix (${#ONLY_RUNTIMES[@]} explicit runtime filters)."
 RUNNER=(python3 "$REPO/verify/audit/runner.py" run "$RUNROOT/matrix.json" "$RUNROOT/report" --platform linux)
@@ -197,18 +219,18 @@ set -e
 
 # Generate an operator-friendly evidence summary even if some real runtimes
 # failed. Never promote missing, skipped, or inconclusive probes to PASS.
-python3 - "$RUNROOT" "$AUDIT_COMMIT" "$SKIP_NATIVE" <<'PY_SUMMARY'
+python3 - "$RUNROOT" "$AUDIT_COMMIT" "$WITH_NATIVE" <<'PY_SUMMARY'
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 commit = sys.argv[2]
-skipped_native = sys.argv[3] == '1'
+skipped_native = sys.argv[3] == '0'
 output = root / 'audit-summary.md'
 report_file = root / 'report/report.json'
 native_file = root / 'native-fixture/report/report.json'
 
 lines = [
     '# Ricochet / metamod-rs audit evidence summary', '',
-    f'- SDK/audit commit: `{commit}`',
+    f'- Audit runner checkout commit: `{commit}`',
     f'- Matrix: `{root / "matrix.json"}`',
     f'- Detailed runtime report: `{report_file}`', '',
     'A map-transition PASS establishes that the expected lifecycle callbacks were',
@@ -230,7 +252,7 @@ def text(value):
 
 lines.append('## Native C++/Rust fixture')
 if skipped_native:
-    lines.append('**SKIPPED by operator (`--skip-native`)**; not certified.')
+    lines.append('**NOT REQUESTED (enable with `--with-native`)**; not certified.')
 elif native_file.exists():
     data = json.loads(native_file.read_text(encoding='utf-8'))
     runs = data.get('runs', [])
@@ -451,22 +473,27 @@ PY_RERUN
     echo "Selection: $SELECTED_FILE"
     exit 0
   fi
-  if (( ! SKIP_NATIVE )); then
-    command -v cargo >/dev/null || [[ -x "$HOME/.cargo/bin/cargo" ]] || die "Cargo needed for native reruns; use --skip-native to omit native checks"
+  if (( WITH_NATIVE || WITH_RUST_TESTS )); then
+    command -v cargo >/dev/null || [[ -x "$HOME/.cargo/bin/cargo" ]] || die "Cargo is required for the requested rerun checks"
     export PATH="$HOME/.cargo/bin:$PATH"
   fi
+  run_workspace_tests
   run_native_suite
   run_matrix_and_summary
 fi
 
 if (( ! SKIP_APT )); then
-  say "Installing native i686 toolchains and required Ubuntu packages (sudo may prompt)."
+  say "Installing Ubuntu prerequisites (sudo may prompt)."
+  build_packages=()
+  if (( WITH_NATIVE || WITH_RUST_TESTS )); then
+    build_packages=(build-essential gcc-multilib g++-multilib clang libclang-dev pkg-config)
+  fi
   command -v sudo >/dev/null || die "sudo is required for package installation. Install sudo and give this user sudo access, or rerun with --skip-apt after provisioning packages."
   sudo dpkg --add-architecture i386
   sudo apt-get update
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates curl git python3 python3-pip unzip zip tar gzip rsync file \
-    build-essential gcc-multilib g++-multilib clang libclang-dev pkg-config \
+    "${build_packages[@]}" \
     lib32gcc-s1 lib32stdc++6 libc6-i386 libstdc++6:i386 libgcc-s1:i386 \
     zlib1g:i386 libsdl2-2.0-0:i386 gnupg coreutils procps
 fi
@@ -483,6 +510,11 @@ DOWNLOADS="$WORKDIR/downloads"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 RUNROOT="$WORKDIR/runs/$RUN_ID"
 mkdir -p "$STEAMCMD_DIR" "$BASE" "$DOWNLOADS" "$RUNROOT"
+PLUGIN="$RUNROOT/libmetamod_audit.so"
+cp -- "$AUDIT_PLUGIN" "$PLUGIN"
+file -- "$PLUGIN" | grep -q 'ELF 32-bit.*shared object.*Intel 80386' || die "Audit plugin must be a Linux i686 shared library."
+PLUGIN_SHA="$(sha256sum "$PLUGIN" | cut -d' ' -f1)"
+
 
 if [[ ! -x "$STEAMCMD_DIR/steamcmd.sh" ]]; then
   say "Installing official Valve SteamCMD (no password stored by this script)."
@@ -593,29 +625,22 @@ fi
 )
 AUDIT_COMMIT="$(git -C "$REPO" rev-parse HEAD)"
 
-if ! command -v rustup >/dev/null || ! command -v cargo >/dev/null; then
-  say "Installing Rust through rustup into this user's home directory."
-  curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
+if (( WITH_NATIVE || WITH_RUST_TESTS )); then
+  if ! command -v rustup >/dev/null || ! command -v cargo >/dev/null; then
+    say "Installing Rust through rustup into this user's home directory."
+    curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
+  fi
+  export PATH="$HOME/.cargo/bin:$PATH"
+  command -v rustup >/dev/null || die "rustup not found after installation"
+  rustup toolchain install stable --profile minimal
+  rustup default stable
+  rustup target add i686-unknown-linux-gnu
+  if [[ -z ${LIBCLANG_PATH:-} ]]; then
+    LIBCLANG_FILE="$(find /usr/lib -name 'libclang.so' -print -quit 2>/dev/null || true)"
+    if [[ -n $LIBCLANG_FILE ]]; then export LIBCLANG_PATH="$(dirname "$LIBCLANG_FILE")"; fi
+  fi
 fi
-export PATH="$HOME/.cargo/bin:$PATH"
-command -v rustup >/dev/null || die "rustup not found after installation"
-rustup toolchain install stable --profile minimal
-rustup default stable
-rustup target add i686-unknown-linux-gnu
-if [[ -z ${LIBCLANG_PATH:-} ]]; then
-  LIBCLANG_FILE="$(find /usr/lib -name 'libclang.so' -print -quit 2>/dev/null || true)"
-  if [[ -n $LIBCLANG_FILE ]]; then export LIBCLANG_PATH="$(dirname "$LIBCLANG_FILE")"; fi
-fi
-if (( ! SKIP_RUST_TESTS )); then
-  say "Running Rust workspace tests and Python audit-runner tests."
-  ( cd "$REPO" && cargo test --workspace --locked )
-  ( cd "$REPO" && python3 -m unittest discover -s verify/audit -v )
-fi
-say "Building Linux i686 metamod-audit plugin."
-( cd "$REPO" && cargo build --locked --release --target i686-unknown-linux-gnu -p metamod-audit )
-PLUGIN="$REPO/target/i686-unknown-linux-gnu/release/libmetamod_audit.so"
-[[ -f "$PLUGIN" ]] || die "Expected plugin missing: $PLUGIN"
-PLUGIN_SHA="$(sha256sum "$PLUGIN" | cut -d' ' -f1)"
+run_workspace_tests
 run_native_suite
 
 # Resolve a release from the public GitHub API; asset file names are selected
@@ -793,13 +818,13 @@ for engine,manager in [('hlds','classic'),('rehlds','classic'),('rehlds','metamo
                 'version':'Steam app 90 steam_legacy' if variant=='stock' else 'operator-supplied',
                 'binary':game},
             'plugin':E['RICO_PLUGIN'],'plugin_sha256':E['RICO_PLUGIN_SHA'],
-            'audit_plugin_commit':E['RICO_AUDIT_COMMIT'],'sdk_commit':E['RICO_AUDIT_COMMIT'],
             'maps':[E['RICO_MAP_1'],E['RICO_MAP_2']],
             'map_cycles':int(E['RICO_CYCLES']), 'timeout_seconds':60,
             'port':27045,'experimental':engine=='hlds' and manager=='metamod-r'})
 (root/'matrix.json').write_text(json.dumps({'schema_version':1,'runtimes':rows},indent=2)+'\n')
 (root/'sources.json').write_text(json.dumps({
     'repo_commit':E['RICO_AUDIT_COMMIT'],
+    'plugin_sha256':E['RICO_PLUGIN_SHA'],
     'download_archives':{p.name:hashlib.sha256(p.read_bytes()).hexdigest()
                           for p in (root.parent.parent/'downloads').glob('*.zip')},
     'stock_relative_gamedll':stock},indent=2)+'\n')
@@ -840,7 +865,8 @@ chmod +x "$RUNROOT"/start-{hlds,rehlds}.sh
 cat > "$RUNROOT/README.txt" <<EOF
 Ricochet runtime audit lab
 ==========================
-Metamod Rust SDK commit: $AUDIT_COMMIT
+Audit runner checkout commit: $AUDIT_COMMIT
+Prebuilt audit plugin: $PLUGIN (SHA-256: $PLUGIN_SHA)
 Valve base: $BASE (steam_legacy, mod ricochet)
 Test configurations: $RUNROOT/matrix.json
 ReHLDS standalone server: $RUNROOT/start-rehlds.sh (LAN/loopback only)
@@ -860,7 +886,7 @@ under your Steam terms. No servers are run as root or exposed publicly.
 For a manually-operated console use --prepare-only and examine launch.json.
 Rerun without provisioning: ./ricochet_audit_ubuntu.sh --rerun latest
 Rerun unsuccessful rows: ./ricochet_audit_ubuntu.sh --rerun latest --failed-only
-Rerun one row: ./ricochet_audit_ubuntu.sh --rerun $RUN_ID --only linux-rehlds-metamod-r-stock --skip-native
+Rerun one row: ./ricochet_audit_ubuntu.sh --rerun $RUN_ID --only linux-rehlds-metamod-r-stock
 Rerun results have their own timestamps and preserve the original snapshots.
 For client lifecycle probes, add --client-wait 120 and connect/disconnect from
 127.0.0.1:27045 when prompted (a remote graphical client cannot reach loopback).
