@@ -784,12 +784,15 @@ mod tests {
         impl Plugin for TestPlugin {
             const METADATA: Metadata = METADATA;
             fn start_frame(&mut self, context: &mut Context<'_>) {
-                for name in [c"test_rejected", c"TEST_REJECTED", c"test_rejected"] {
+                for name in [
+                    crate::console_name!(c"test_rejected"),
+                    crate::console_name!(c"TEST_REJECTED"),
+                    crate::console_name!(c"test_rejected"),
+                ] {
                     assert_eq!(
-                        context.server().register_cvar(
-                            &crate::ConsoleName::try_from(name).unwrap(),
-                            crate::CvarValue::try_from(c"value").unwrap()
-                        ),
+                        context
+                            .server()
+                            .register_cvar(&name, crate::cvar_value!(c"value")),
                         Err(crate::EngineError::RegistrationRejected)
                     );
                 }
@@ -948,7 +951,7 @@ mod tests {
         assert_eq!(INDEX, 7);
         assert_eq!(SLOT.to_string(), "7");
         assert_eq!(PlayerSlot::new(INDEX), Some(SLOT));
-        assert_eq!(PlayerSlot::new(i32::MAX).unwrap().get(), i32::MAX);
+        assert_eq!(const { PlayerSlot::new(i32::MAX).unwrap() }.get(), i32::MAX);
         assert_eq!(PlayerSlot::new(-1), None);
         assert_eq!(PlayerSlot::new(i32::MIN), None);
     }
@@ -977,7 +980,7 @@ mod tests {
 
             fn start_frame(&mut self, ctx: &mut Context<'_>) {
                 self.trace.push("frame");
-                let slot = PlayerSlot::new(7).unwrap();
+                let slot = const { PlayerSlot::new(7).unwrap() };
                 let player = EVENTS
                     .with(|events| events.borrow_mut().join(slot))
                     .unwrap();
@@ -1044,7 +1047,7 @@ mod tests {
 
     #[test]
     fn session_ids_expire_on_disconnect_slot_reuse_and_map_boundaries() {
-        let slot = PlayerSlot::new(7).unwrap();
+        let slot = const { PlayerSlot::new(7).unwrap() };
         let first = EVENTS
             .with(|events| events.borrow_mut().join(slot))
             .unwrap();

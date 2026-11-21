@@ -508,8 +508,12 @@ mod tests {
             assert_eq!(PlayerUserId::new(invalid), None);
             assert!(PlayerUserId::try_from(invalid).is_err());
         }
-        for valid in [1, 42, i32::MAX] {
-            let id = PlayerUserId::new(valid).unwrap();
+        const VALID: [(i32, PlayerUserId); 3] = [
+            (1, PlayerUserId::new(1).unwrap()),
+            (42, PlayerUserId::new(42).unwrap()),
+            (i32::MAX, PlayerUserId::new(i32::MAX).unwrap()),
+        ];
+        for (valid, id) in VALID {
             assert_eq!(id.get(), valid);
             assert_eq!(PlayerUserId::try_from(valid), Ok(id));
             assert_eq!(i32::from(id), valid);

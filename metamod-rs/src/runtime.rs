@@ -42,6 +42,11 @@ pub struct PlayerSlot(NonZeroI32);
 impl PlayerSlot {
     /// Construct a slot from GoldSrc's signed, one-based index. Zero and
     /// negative indices return `None`. Use `Context::player_at` to check occupancy.
+    ///
+    /// ```compile_fail,E0080
+    /// use metamod_rs::PlayerSlot;
+    /// const SLOT: PlayerSlot = PlayerSlot::new(0).unwrap();
+    /// ```
     pub const fn new(index: i32) -> Option<Self> {
         match NonZeroI32::new(index) {
             Some(index) if index.get() > 0 => Some(Self(index)),
@@ -106,6 +111,11 @@ pub struct PlayerUserId(NonZeroI32);
 impl PlayerUserId {
     /// Construct an ID from GoldSrc's integer value. Zero and negatives
     /// represent unavailable or invalid IDs.
+    ///
+    /// ```compile_fail,E0080
+    /// use metamod_rs::PlayerUserId;
+    /// const USER_ID: PlayerUserId = PlayerUserId::new(-1).unwrap();
+    /// ```
     pub const fn new(value: i32) -> Option<Self> {
         match NonZeroI32::new(value) {
             Some(value) if value.get() > 0 => Some(Self(value)),
