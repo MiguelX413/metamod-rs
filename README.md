@@ -168,9 +168,11 @@ arrive before the map is active. The engine demo logs `classname` keys.
 
 ### Tracing and entity handles
 
-Use `ctx.server().trace_line(start, end, options)` or
-`trace_hull(start, end, Hull::Human, options)` on an active map. Inputs are
-finite world-space `[f32; 3]` coordinates. Results own the fraction, end
+Create a segment with `TraceSegment::new(start, end)`. The const constructor
+rejects NaN and infinities in either world-space `[f32; 3]` endpoint. Reuse
+the validated segment with `ctx.server().trace_line(segment, options)` or
+`trace_hull(segment, Hull::Human, options)` on an active map.
+Results own the fraction, end
 position, solid flags, optional plane, hit group, and optional entity handle.
 The engine demo's `rust_trace` command shows both trace kinds.
 

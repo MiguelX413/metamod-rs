@@ -424,36 +424,72 @@ impl fmt::Display for TraceError {
 
 impl std::error::Error for TraceError {}
 
+/// Finite world-space endpoints shared by line and hull traces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TraceSegment {
+    start: [f32; 3],
+    end: [f32; 3],
+}
+
+impl TraceSegment {
+    /// Validate both endpoints. NaN and infinities return
+    /// `TraceError::InvalidCoordinates`.
+    ///
+    /// Requiring a valid segment in a constant fails during const evaluation
+    /// if an endpoint is non-finite.
+    ///
+    /// ```compile_fail,E0080
+    /// use metamod_rs::TraceSegment;
+    ///
+    /// const SEGMENT: TraceSegment = match TraceSegment::new([0.0; 3], [f32::INFINITY, 0.0, 0.0]) {
+    ///     Ok(segment) => segment,
+    ///     Err(_) => panic!("trace endpoints must be finite"),
+    /// };
+    /// ```
+    pub const fn new(start: [f32; 3], end: [f32; 3]) -> Result<Self, TraceError> {
+        let mut axis = 0;
+        while axis < start.len() {
+            if !start[axis].is_finite() || !end[axis].is_finite() {
+                return Err(TraceError::InvalidCoordinates);
+            }
+            axis += 1;
+        }
+        Ok(Self { start, end })
+    }
+
+    pub const fn start(self) -> [f32; 3] {
+        self.start
+    }
+
+    pub const fn end(self) -> [f32; 3] {
+        self.end
+    }
+}
+
 impl Server<'_, '_> {
     pub fn trace_line(
         &self,
-        start: [f32; 3],
-        end: [f32; 3],
+        segment: TraceSegment,
         options: TraceOptions,
     ) -> Result<TraceResult, TraceError> {
-        trace(start, end, options, None)
+        trace(segment, options, None)
     }
 
     pub fn trace_hull(
         &self,
-        start: [f32; 3],
-        end: [f32; 3],
+        segment: TraceSegment,
         hull: Hull,
         options: TraceOptions,
     ) -> Result<TraceResult, TraceError> {
-        trace(start, end, options, Some(hull))
+        trace(segment, options, Some(hull))
     }
 }
 
 fn trace(
-    start: [f32; 3],
-    end: [f32; 3],
+    segment: TraceSegment,
     options: TraceOptions,
     hull: Option<Hull>,
 ) -> Result<TraceResult, TraceError> {
-    if !start.into_iter().chain(end).all(f32::is_finite) {
-        return Err(TraceError::InvalidCoordinates);
-    }
     let engine = __ffi::engine().ok_or(TraceError::Unavailable)?;
     let map = active_map().ok_or(TraceError::Unavailable)?;
     let skip = match options.skip {
@@ -473,16 +509,16 @@ fn trace(
     unsafe {
         match hull {
             Some(hull) => engine.trace_hull.ok_or(TraceError::Unavailable)?(
-                start.as_ptr(),
-                end.as_ptr(),
+                segment.start.as_ptr(),
+                segment.end.as_ptr(),
                 monsters,
                 hull as i32,
                 skip,
                 &mut output,
             ),
             None => engine.trace_line.ok_or(TraceError::Unavailable)?(
-                start.as_ptr(),
-                end.as_ptr(),
+                segment.start.as_ptr(),
+                segment.end.as_ptr(),
                 monsters,
                 skip,
                 &mut output,
@@ -612,15 +648,24 @@ mod tests {
     }
 
     #[test]
-    fn tracing_rejects_nonfinite_coordinates() {
-        assert_eq!(
-            trace(
-                [f32::NAN, 0.0, 0.0],
-                [0.0; 3],
-                TraceOptions::default(),
-                None
-            ),
-            Err(TraceError::InvalidCoordinates)
-        );
+    fn trace_segment_validates_both_endpoints_in_const_and_runtime_contexts() {
+        const SEGMENT: TraceSegment = match TraceSegment::new([0.0; 3], [1.0, -2.0, 3.0]) {
+            Ok(segment) => segment,
+            Err(_) => panic!("fixed coordinates are finite"),
+        };
+        const INVALID: Result<TraceSegment, TraceError> =
+            TraceSegment::new([0.0; 3], [0.0, f32::INFINITY, 0.0]);
+        assert_eq!(SEGMENT.start(), [0.0; 3]);
+        assert_eq!(SEGMENT.end(), [1.0, -2.0, 3.0]);
+        assert_eq!(INVALID, Err(TraceError::InvalidCoordinates));
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for axis in 0..3 {
+                let mut invalid = [0.0; 3];
+                invalid[axis] = value;
+                let expected = Err(TraceError::InvalidCoordinates);
+                assert_eq!(TraceSegment::new(invalid, [0.0; 3]), expected);
+                assert_eq!(TraceSegment::new([0.0; 3], invalid), expected);
+            }
+        }
     }
 }

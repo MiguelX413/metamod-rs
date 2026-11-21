@@ -139,9 +139,12 @@ impl Plugin for EngineDemo {
             return;
         }
         if command.name().as_c_str() == c"rust_trace" {
-            let start = [0.0, 0.0, 64.0];
-            let end = [0.0, 0.0, -64.0];
-            match server.trace_line(start, end, TraceOptions::default()) {
+            const SEGMENT: TraceSegment =
+                match TraceSegment::new([0.0, 0.0, 64.0], [0.0, 0.0, -64.0]) {
+                    Ok(segment) => segment,
+                    Err(_) => panic!("demo trace endpoints must be finite"),
+                };
+            match server.trace_line(SEGMENT, TraceOptions::default()) {
                 Ok(line) => {
                     let hit = line.hit.filter(|hit| ctx.is_entity_current(*hit));
                     server.print(&c_string(format!(
@@ -153,7 +156,7 @@ impl Plugin for EngineDemo {
                         monsters: TraceMonsters::Ignore,
                         skip: hit,
                     };
-                    match server.trace_hull(start, end, Hull::Human, options) {
+                    match server.trace_hull(SEGMENT, Hull::Human, options) {
                         Ok(hull) => {
                             server.print(&c_string(format!("Hull fraction: {}\n", hull.fraction)))
                         }

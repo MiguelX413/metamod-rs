@@ -13,7 +13,7 @@ pub use engine::{Command, ConsoleName, CvarValue, EngineError, PlayerInfo};
 pub use hooks::{HookResult, KeyValueEvent, PostHookResult};
 pub use trace::{
     EntityError, EntityHandle, EntityInfo, EntityKeyValues, EntityKind, EntitySpatial, Hull,
-    TraceError, TraceMonsters, TraceOptions, TracePlane, TraceResult,
+    TraceError, TraceMonsters, TraceOptions, TracePlane, TraceResult, TraceSegment,
 };
 
 pub use runtime::{
@@ -31,8 +31,8 @@ pub mod prelude {
         Command, ConsoleName, Context, CvarValue, EngineError, EntityError, EntityHandle,
         EntityInfo, EntityKeyValues, EntityKind, EntitySpatial, HookResult, Hull, KeyValueEvent,
         Metadata, PlayerId, PlayerInfo, PlayerSlot, PlayerUserId, Plugin, PostHookResult, Server,
-        TraceError, TraceMonsters, TraceOptions, TracePlane, TraceResult, console_name, cvar_value,
-        export_plugin,
+        TraceError, TraceMonsters, TraceOptions, TracePlane, TraceResult, TraceSegment,
+        console_name, cvar_value, export_plugin,
     };
 }
 
