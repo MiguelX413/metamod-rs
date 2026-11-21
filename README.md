@@ -363,6 +363,11 @@ The SDK leaves PE ordinals to the linker.
   and map epochs around native calls. Player information requires a
   valid client capacity and the edict serial observed at join, even if
   a replacement at the same index has not yet produced a player hook.
+  Join tracking checks the original edict's live flag and serial again
+  after the native slot lookup. A map transition, shutdown, or nested
+  player lookup invalidates that attempt before the second read. The host
+  keeps the slot allocation readable until such a boundary, including
+  during map loading if it supplies a player hook then.
   `player_at` and `is_player_current` describe observed hook bookkeeping.
   It copies strings before making
   another native call. Native return buffers must remain readable until
@@ -429,9 +434,9 @@ sanitizer runtimes and leaves the Rust libraries uninstrumented. The
 32-bit GCC AddressSanitizer runtime also checks for leaks. The loader
 marks only the specific CVar and command allocations it receives that
 the SDK intentionally retains for process lifetime.
-The separate Linux x86_64 CI job runs Rust library tests with nightly
-AddressSanitizer. It instruments the target Rust crates and uses the
-prebuilt standard library. Run the same check locally with:
+The separate Linux Rust sanitizer job runs library tests with nightly
+AddressSanitizer on x86_64 and i686. Both variants instrument the target
+Rust crates and use the prebuilt standard library. For x86_64, run:
 
 ```sh
 ASAN_OPTIONS=detect_leaks=1 RUSTFLAGS='-Zsanitizer=address --cfg metamod_lsan' \
@@ -441,8 +446,18 @@ ASAN_OPTIONS=detect_leaks=1 RUSTFLAGS='-Zsanitizer=address --cfg metamod_lsan' \
 Leak detection is enabled. Test-only annotations identify the specific
 registration allocations and secondary panic payloads that the SDK
 deliberately retains. Unrelated leaks still fail the job.
-This 64-bit test run exercises Rust FFI code with test fixtures.
-The x86 platform jobs cover the shipping ABI and native loader.
+The i686 nightly target supports address instrumentation but does not ship
+its runtime. CI supplies the 32-bit Clang runtime externally. With Clang,
+its 32-bit compiler-rt libraries, and a multilib linker installed, run:
+
+```sh
+ASAN_OPTIONS=detect_leaks=1 \
+  RUSTFLAGS='-Zsanitizer=address -Zexternal-clangrt -Clinker=clang -Clink-arg=-fsanitize=address --cfg metamod_lsan' \
+  cargo +nightly test --locked --workspace --lib --target i686-unknown-linux-gnu
+```
+
+The Rust tests exercise FFI code with test fixtures. The platform loader
+jobs separately check the shipping ABI and example libraries.
 The Linux script accepts two optional paths for comparing against separate C++
 reference checkouts. Binding generation always uses the submodules.
 

@@ -69,8 +69,19 @@ jobs:
         run: bash verify/linux-i686.sh
 
   rust-asan:
-    name: Rust AddressSanitizer and LeakSanitizer (Linux x86_64)
+    name: Rust AddressSanitizer and LeakSanitizer (Linux ${{ matrix.arch }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-gnu
+            rustflags: -Zsanitizer=address --cfg metamod_lsan
+          - arch: i686
+            target: i686-unknown-linux-gnu
+            # The i686 target supports instrumentation but does not bundle an ASan runtime.
+            rustflags: -Zsanitizer=address -Zexternal-clangrt -Clinker=clang-18 -Clink-arg=-fsanitize=address --cfg metamod_lsan
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -89,12 +100,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang libclang-dev
-          rustup toolchain install nightly --profile minimal --target x86_64-unknown-linux-gnu
+          rustup toolchain install nightly --profile minimal --target "${{ matrix.target }}"
+      - name: Install the external i686 sanitizer runtime
+        if: matrix.arch == 'i686'
+        run: sudo apt-get install -y clang-18 libclang-rt-18-dev g++-multilib
       - name: Run workspace library tests with AddressSanitizer and LeakSanitizer
         env:
-          RUSTFLAGS: -Zsanitizer=address --cfg metamod_lsan
+          RUSTFLAGS: ${{ matrix.rustflags }}
           ASAN_OPTIONS: detect_leaks=1
-        run: cargo +nightly test --locked --workspace --lib --target x86_64-unknown-linux-gnu
+        run: cargo +nightly test --locked --workspace --lib --target "${{ matrix.target }}"
 
   windows-i686:
     name: Win32 ABI and loader

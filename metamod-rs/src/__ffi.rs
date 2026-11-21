@@ -740,6 +740,11 @@ unsafe extern "C" fn player_join<P: Plugin>(edict: *mut edict_t) {
         if !SHUTDOWN.get()
             && let Some(serial) = unsafe { crate::trace::live_serial(edict) }
             && let Some(slot) = unsafe { player_slot(edict) }
+            // SAFETY: A successful slot lookup means no observed map
+            // transition, nested player lookup, or shutdown interrupted it.
+            // The host keeps the edict slot allocated until such a boundary,
+            // even when it frees or recycles the occupant.
+            && unsafe { crate::trace::live_serial(edict) } == Some(serial)
             && let Some(player) = EVENTS.with(|events| events.borrow_mut().join(slot, serial))
         {
             submit::<P>(Event::Join(player));

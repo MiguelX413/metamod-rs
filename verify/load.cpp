@@ -37,6 +37,8 @@ static bool expire_player;
 static bool reuse_player_during_lookup;
 static bool expect_reused_player_fallback;
 static int userid_reads;
+enum class JoinIndexChange { none, reuse, free, disconnect, map };
+static JoinIndexChange join_index_change;
 
 static cvar_t *find_cvar(const char *name) {
     return registered_cvar && std::strcmp(name, registered_cvar->name) == 0 ? registered_cvar : nullptr;
@@ -164,6 +166,19 @@ static void trace_hull(const float *start, const float *end, int mode, int hull,
 static int index_of_edict(const edict_t *edict) {
     assert(edict == &player);
     ++trace_index_lookups;
+    const auto change = join_index_change;
+    join_index_change = JoinIndexChange::none;
+    switch (change) {
+    case JoinIndexChange::reuse: ++player.serialnumber; break;
+    case JoinIndexChange::free: player.free = 1; break;
+    case JoinIndexChange::disconnect: hooks.pfnClientDisconnect(&player); break;
+    case JoinIndexChange::map:
+        hooks.pfnServerDeactivate();
+        hooks.pfnServerActivate(nullptr, 0, 0);
+        post_hooks.pfnServerActivate(nullptr, 0, 0);
+        break;
+    case JoinIndexChange::none: break;
+    }
     return 7;
 }
 
@@ -391,6 +406,21 @@ int main(int argc, char **argv) {
         globals.mres = MRES_UNSET;
         post_hooks.pfnClientPutInServer(nullptr);
         assert(logged == 4 && globals.mres == MRES_IGNORED);
+        // Keep the fixture allocation live, including during map transitions.
+        const JoinIndexChange rejected_joins[] = {
+            JoinIndexChange::reuse, JoinIndexChange::free,
+            JoinIndexChange::disconnect, JoinIndexChange::map,
+        };
+        for (auto change : rejected_joins) {
+            const int reads_before = userid_reads;
+            join_index_change = change;
+            globals.mres = MRES_UNSET;
+            post_hooks.pfnClientPutInServer(&player);
+            assert(join_index_change == JoinIndexChange::none);
+            assert(logged == 4 && userid_reads == reads_before);
+            assert(globals.mres == MRES_IGNORED);
+            player.free = 0;
+        }
         const int reads_before_reuse = userid_reads;
         reuse_player_during_lookup = true;
         expect_reused_player_fallback = true;
