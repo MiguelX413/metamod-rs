@@ -9,11 +9,13 @@ use metamod_sys::{
     },
 };
 use std::{
-    borrow::Cow,
+    borrow::Borrow,
     cell::{Cell, RefCell},
     collections::HashSet,
     ffi::{CStr, CString, c_char},
-    fmt, ptr,
+    fmt,
+    ops::Deref,
+    ptr,
 };
 
 macro_rules! engine_callbacks {
@@ -70,7 +72,7 @@ thread_local! {
 /// A command invocation with owned copies of the engine's argument tokens.
 #[derive(Clone, Debug)]
 pub struct Command {
-    name: ConsoleName,
+    name: OwnedConsoleName,
     args: Vec<CString>,
 }
 
@@ -131,12 +133,13 @@ impl fmt::Display for EngineError {
 impl std::error::Error for EngineError {}
 
 /// A validated, lowercase name shared by server commands and CVars.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct ConsoleName(Cow<'static, CStr>);
+#[repr(transparent)]
+#[derive(Debug, Eq, Hash, PartialEq)]
+pub struct ConsoleName(CStr);
 
 impl ConsoleName {
     /// Borrow the normalized native name.
-    pub fn as_c_str(&self) -> &CStr {
+    pub const fn as_c_str(&self) -> &CStr {
         &self.0
     }
 }
@@ -157,6 +160,28 @@ const fn valid_name(value: &[u8]) -> bool {
 }
 
 impl ConsoleName {
+    /// Borrow a name that is already lowercase. Uppercase input requires normalization.
+    pub const fn new(name: &CStr) -> Result<&Self, EngineError> {
+        if !valid_name(name.to_bytes()) {
+            return Err(EngineError::InvalidName);
+        }
+        let bytes = name.to_bytes();
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index].is_ascii_uppercase() {
+                return Err(EngineError::InvalidName);
+            }
+            index += 1;
+        }
+        Ok(Self::from_normalized(name))
+    }
+
+    const fn from_normalized(name: &CStr) -> &Self {
+        // SAFETY: The transparent wrapper has the same layout and metadata
+        // as CStr. Callers have validated the name and its lowercase form.
+        unsafe { &*(name as *const CStr as *const Self) }
+    }
+
     #[doc(hidden)]
     pub const fn __normalize<const N: usize>(value: &CStr) -> [u8; N] {
         let bytes = value.to_bytes();
@@ -172,62 +197,263 @@ impl ConsoleName {
     }
 
     #[doc(hidden)]
-    pub const fn __from_static_bytes(bytes: &'static [u8]) -> Self {
+    pub const fn __from_static_bytes(bytes: &'static [u8]) -> &'static Self {
         let Ok(name) = CStr::from_bytes_with_nul(bytes) else {
             panic!("invalid console name terminator");
         };
-        let value = name.to_bytes();
-        assert!(valid_name(value), "invalid console name");
-        let mut i = 0;
-        while i < value.len() {
-            assert!(
-                !value[i].is_ascii_uppercase(),
-                "console name must be lowercase"
-            );
-            i += 1;
+        match Self::new(name) {
+            Ok(name) => name,
+            Err(_) => panic!("invalid normalized console name"),
         }
-        Self(Cow::Borrowed(name))
     }
 }
 
-impl TryFrom<&CStr> for ConsoleName {
+impl<'a> TryFrom<&'a CStr> for &'a ConsoleName {
     type Error = EngineError;
 
-    fn try_from(value: &CStr) -> Result<Self, Self::Error> {
-        let value = value.to_bytes();
-        if !valid_name(value) {
-            return Err(EngineError::InvalidName);
-        }
-        CString::new(value.to_ascii_lowercase())
-            .map(|name| Self(Cow::Owned(name)))
-            .map_err(|_| EngineError::InvalidName)
+    fn try_from(name: &'a CStr) -> Result<Self, Self::Error> {
+        ConsoleName::new(name)
     }
 }
 
-/// A borrowed CVar input of at most 1,023 bytes, excluding its terminator.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CvarValue<'a>(&'a CStr);
+impl AsRef<CStr> for ConsoleName {
+    fn as_ref(&self) -> &CStr {
+        self.as_c_str()
+    }
+}
 
-impl<'a> CvarValue<'a> {
+impl ToOwned for ConsoleName {
+    type Owned = OwnedConsoleName;
+
+    fn to_owned(&self) -> Self::Owned {
+        OwnedConsoleName(self.as_c_str().to_owned())
+    }
+}
+
+/// An owned, lowercase console name. Use [Self::normalize] to lowercase input.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct OwnedConsoleName(CString);
+
+impl TryFrom<&CStr> for OwnedConsoleName {
+    type Error = EngineError;
+
+    fn try_from(name: &CStr) -> Result<Self, Self::Error> {
+        ConsoleName::new(name).map(ToOwned::to_owned)
+    }
+}
+
+impl TryFrom<CString> for OwnedConsoleName {
+    type Error = EngineError;
+
+    fn try_from(name: CString) -> Result<Self, Self::Error> {
+        ConsoleName::new(&name)?;
+        Ok(Self(name))
+    }
+}
+
+impl OwnedConsoleName {
+    /// Validate an owned C string and lowercase its ASCII letters in place.
+    pub fn normalize(name: CString) -> Result<Self, EngineError> {
+        if !valid_name(name.as_bytes()) {
+            return Err(EngineError::InvalidName);
+        }
+        if name.as_bytes().iter().any(u8::is_ascii_uppercase) {
+            let mut bytes = name.into_bytes_with_nul();
+            bytes.make_ascii_lowercase();
+            let normalized =
+                CString::from_vec_with_nul(bytes).map_err(|_| EngineError::InvalidName)?;
+            return Ok(Self(normalized));
+        }
+        Ok(Self(name))
+    }
+}
+
+impl Deref for OwnedConsoleName {
+    type Target = ConsoleName;
+
+    fn deref(&self) -> &ConsoleName {
+        ConsoleName::from_normalized(&self.0)
+    }
+}
+
+impl Borrow<ConsoleName> for OwnedConsoleName {
+    fn borrow(&self) -> &ConsoleName {
+        self
+    }
+}
+
+impl AsRef<ConsoleName> for OwnedConsoleName {
+    fn as_ref(&self) -> &ConsoleName {
+        self
+    }
+}
+
+impl From<OwnedConsoleName> for Box<ConsoleName> {
+    fn from(name: OwnedConsoleName) -> Self {
+        ConsoleName::box_normalized(name.0.into_boxed_c_str())
+    }
+}
+
+impl ConsoleName {
+    /// Validate and lowercase an owned C string in place, reusing its allocation.
+    pub fn normalize_boxed(name: Box<CStr>) -> Result<Box<Self>, EngineError> {
+        OwnedConsoleName::normalize(name.into_c_string()).map(Box::from)
+    }
+
+    fn box_normalized(name: Box<CStr>) -> Box<Self> {
+        let raw = Box::into_raw(name);
+        // SAFETY: The name is normalized and validated. The transparent
+        // wrapper preserves the allocation layout and pointer metadata.
+        unsafe { Box::from_raw(raw as *mut Self) }
+    }
+}
+
+impl TryFrom<Box<CStr>> for Box<ConsoleName> {
+    type Error = EngineError;
+
+    /// Validate an already lowercase name and reuse its allocation.
+    fn try_from(name: Box<CStr>) -> Result<Self, Self::Error> {
+        ConsoleName::new(&name)?;
+        Ok(ConsoleName::box_normalized(name))
+    }
+}
+
+impl From<&ConsoleName> for Box<ConsoleName> {
+    fn from(name: &ConsoleName) -> Self {
+        name.to_owned().into()
+    }
+}
+
+impl Clone for Box<ConsoleName> {
+    fn clone(&self) -> Self {
+        Self::from(self.as_ref())
+    }
+}
+
+impl From<Box<ConsoleName>> for Box<CStr> {
+    /// Recover the underlying C string without copying or reallocating.
+    fn from(name: Box<ConsoleName>) -> Self {
+        let raw = Box::into_raw(name);
+        // SAFETY: ConsoleName is transparent over CStr, so the cast
+        // preserves the allocation layout and pointer metadata.
+        unsafe { Box::from_raw(raw as *mut CStr) }
+    }
+}
+
+impl From<Box<ConsoleName>> for OwnedConsoleName {
+    /// Take ownership of the normalized name without copying or reallocating.
+    fn from(name: Box<ConsoleName>) -> Self {
+        Self(Box::<CStr>::from(name).into_c_string())
+    }
+}
+
+impl TryFrom<CString> for Box<ConsoleName> {
+    type Error = EngineError;
+
+    fn try_from(name: CString) -> Result<Self, Self::Error> {
+        OwnedConsoleName::try_from(name).map(Self::from)
+    }
+}
+
+impl TryFrom<&CStr> for Box<ConsoleName> {
+    type Error = EngineError;
+
+    fn try_from(name: &CStr) -> Result<Self, Self::Error> {
+        OwnedConsoleName::try_from(name).map(Self::from)
+    }
+}
+
+/// A validated CVar input of at most 1,023 bytes, excluding its terminator.
+#[repr(transparent)]
+#[derive(Debug, Eq, PartialEq)]
+pub struct CvarValue(CStr);
+
+impl CvarValue {
     /// Check the CVar byte limit without allocating.
-    pub const fn new(value: &'a CStr) -> Result<Self, EngineError> {
+    pub const fn new(value: &CStr) -> Result<&Self, EngineError> {
         if value.to_bytes().len() > 1023 {
             return Err(EngineError::InvalidValue);
         }
-        Ok(Self(value))
+        // SAFETY: The length is validated, and the transparent wrapper
+        // preserves the layout, metadata, and borrow lifetime of the CStr.
+        Ok(unsafe { &*(value as *const CStr as *const Self) })
     }
 
     /// Return the original C string without copying or decoding it.
-    pub const fn as_c_str(self) -> &'a CStr {
-        self.0
+    pub const fn as_c_str(&self) -> &CStr {
+        &self.0
     }
 }
 
-impl<'a> TryFrom<&'a CStr> for CvarValue<'a> {
+impl<'a> TryFrom<&'a CStr> for &'a CvarValue {
     type Error = EngineError;
 
     fn try_from(value: &'a CStr) -> Result<Self, Self::Error> {
-        Self::new(value)
+        CvarValue::new(value)
+    }
+}
+
+impl AsRef<CStr> for CvarValue {
+    fn as_ref(&self) -> &CStr {
+        self.as_c_str()
+    }
+}
+
+impl From<&CvarValue> for Box<CvarValue> {
+    fn from(value: &CvarValue) -> Self {
+        CvarValue::box_validated(value.as_c_str().into())
+    }
+}
+
+impl Clone for Box<CvarValue> {
+    fn clone(&self) -> Self {
+        Self::from(self.as_ref())
+    }
+}
+
+impl From<Box<CvarValue>> for Box<CStr> {
+    /// Recover the underlying C string without copying or reallocating.
+    fn from(value: Box<CvarValue>) -> Self {
+        let raw = Box::into_raw(value);
+        // SAFETY: CvarValue is transparent over CStr, so the cast
+        // preserves the allocation layout and pointer metadata.
+        unsafe { Box::from_raw(raw as *mut CStr) }
+    }
+}
+
+impl TryFrom<CString> for Box<CvarValue> {
+    type Error = EngineError;
+
+    fn try_from(value: CString) -> Result<Self, Self::Error> {
+        CvarValue::new(&value)?;
+        Ok(CvarValue::box_validated(value.into_boxed_c_str()))
+    }
+}
+
+impl TryFrom<Box<CStr>> for Box<CvarValue> {
+    type Error = EngineError;
+
+    /// Validate the byte limit and reuse the input allocation.
+    fn try_from(value: Box<CStr>) -> Result<Self, Self::Error> {
+        CvarValue::new(&value)?;
+        Ok(CvarValue::box_validated(value))
+    }
+}
+
+impl TryFrom<&CStr> for Box<CvarValue> {
+    type Error = EngineError;
+
+    fn try_from(value: &CStr) -> Result<Self, Self::Error> {
+        CvarValue::new(value).map(Self::from)
+    }
+}
+
+impl CvarValue {
+    fn box_validated(value: Box<CStr>) -> Box<Self> {
+        let raw = Box::into_raw(value);
+        // SAFETY: The callers enforce the value length limit. The transparent
+        // wrapper preserves the allocation layout and pointer metadata.
+        unsafe { Box::from_raw(raw as *mut Self) }
     }
 }
 
@@ -296,7 +522,7 @@ impl Server<'_, '_> {
     pub fn register_cvar(
         &self,
         name: &ConsoleName,
-        default: CvarValue<'_>,
+        default: &CvarValue,
     ) -> Result<(), EngineError> {
         registration_available()?;
         let engine = engine()?;
@@ -356,11 +582,7 @@ impl Server<'_, '_> {
     }
 
     /// Set an existing CVar through the engine, which copies the supplied value.
-    pub fn set_cvar(
-        &self,
-        name: &ConsoleName,
-        new_value: CvarValue<'_>,
-    ) -> Result<(), EngineError> {
+    pub fn set_cvar(&self, name: &ConsoleName, new_value: &CvarValue) -> Result<(), EngineError> {
         let engine = engine()?;
         let set = engine.set_cvar.ok_or(EngineError::Unavailable)?;
         if !exists(engine, name.as_c_str())? {
@@ -477,7 +699,7 @@ pub(crate) unsafe fn read_command() -> Option<Command> {
         Some(value)
     };
     let invoked = argument(0)?;
-    let name = ConsoleName::try_from(invoked.as_c_str()).ok()?;
+    let name = OwnedConsoleName::normalize(invoked).ok()?;
     if !COMMANDS.with(|commands| commands.borrow().contains(name.as_c_str())) {
         return None;
     }
@@ -576,24 +798,27 @@ mod tests {
     #[test]
     fn native_inputs_still_enforce_console_rules() {
         assert_eq!(
-            ConsoleName::try_from(c"Mixed_Name-7")
+            OwnedConsoleName::normalize(c"Mixed_Name-7".to_owned())
                 .as_ref()
-                .map(ConsoleName::as_c_str)
+                .map(|name| name.as_c_str())
                 .map_err(|error| *error),
             Ok(c"mixed_name-7")
         );
         assert_eq!(
-            ConsoleName::try_from(c"bad name"),
+            OwnedConsoleName::try_from(c"bad name"),
             Err(EngineError::InvalidName)
         );
         assert_eq!(
-            ConsoleName::try_from(c"bad\xff"),
+            OwnedConsoleName::try_from(c"bad\xff"),
             Err(EngineError::InvalidName)
         );
-        assert_eq!(ConsoleName::try_from(c""), Err(EngineError::InvalidName));
+        assert_eq!(
+            OwnedConsoleName::try_from(c""),
+            Err(EngineError::InvalidName)
+        );
         let maximum = CString::new(vec![b'A'; 63]).unwrap();
         assert_eq!(
-            ConsoleName::try_from(maximum.as_c_str())
+            OwnedConsoleName::normalize(maximum)
                 .unwrap()
                 .as_c_str()
                 .to_bytes(),
@@ -601,50 +826,145 @@ mod tests {
         );
         let oversized = CString::new(vec![b'A'; 64]).unwrap();
         assert_eq!(
-            ConsoleName::try_from(oversized.as_c_str()),
+            OwnedConsoleName::try_from(oversized.as_c_str()),
             Err(EngineError::InvalidName)
+        );
+    }
+
+    #[test]
+    fn borrowed_console_names_keep_storage_and_require_lowercase() {
+        let input = CString::new("mixed_name-7").unwrap();
+        let borrowed: &ConsoleName = input.as_c_str().try_into().unwrap();
+        assert_eq!(borrowed.as_c_str().as_ptr(), input.as_ptr());
+        assert_eq!(
+            ConsoleName::new(c"Mixed_Name-7"),
+            Err(EngineError::InvalidName)
+        );
+        assert_eq!(
+            OwnedConsoleName::try_from(c"Mixed_Name-7"),
+            Err(EngineError::InvalidName)
+        );
+        assert_eq!(
+            OwnedConsoleName::try_from(c"Mixed_Name-7".to_owned()),
+            Err(EngineError::InvalidName)
+        );
+        let owned = OwnedConsoleName::try_from(input).unwrap();
+        let borrowed = ConsoleName::new(c"mixed_name-7").unwrap();
+        assert_eq!(owned.as_ref(), borrowed);
+        assert!(HashSet::from([owned]).contains(borrowed));
+    }
+
+    #[test]
+    fn boxed_console_inputs_validate_and_clone() {
+        assert_eq!(
+            Box::<ConsoleName>::try_from(c"Mixed-Name"),
+            Err(EngineError::InvalidName)
+        );
+        assert_eq!(
+            Box::<ConsoleName>::try_from(c"Mixed-Name".to_owned()),
+            Err(EngineError::InvalidName)
+        );
+        let name = Box::<ConsoleName>::try_from(c"mixed-name".to_owned()).unwrap();
+        let cloned = name.clone();
+        assert_eq!(cloned, name);
+        assert_ne!(cloned.as_c_str().as_ptr(), name.as_c_str().as_ptr());
+        assert_eq!(name.as_c_str(), c"mixed-name");
+        let original = name.as_c_str().as_ptr();
+        let native: Box<CStr> = name.into();
+        assert_eq!(native.as_ptr(), original);
+        assert_eq!(&*native, c"mixed-name");
+        let name = Box::<ConsoleName>::try_from(native).unwrap();
+        assert_eq!(name.as_c_str().as_ptr(), original);
+        assert_eq!(name.as_c_str(), c"mixed-name");
+        let uppercase = Box::<CStr>::from(c"Uppercase");
+        let original = uppercase.as_ptr();
+        let lower = ConsoleName::normalize_boxed(uppercase).unwrap();
+        assert_eq!(lower.as_c_str().as_ptr(), original);
+        assert_eq!(lower.as_c_str(), c"uppercase");
+        assert_eq!(
+            Box::<ConsoleName>::try_from(Box::<CStr>::from(c"Uppercase")),
+            Err(EngineError::InvalidName)
+        );
+        assert_eq!(
+            ConsoleName::normalize_boxed(Box::<CStr>::from(c"bad name")),
+            Err(EngineError::InvalidName)
+        );
+        assert_eq!(
+            Box::<ConsoleName>::try_from(Box::<CStr>::from(c"bad name")),
+            Err(EngineError::InvalidName)
+        );
+        let original = cloned.as_c_str().as_ptr();
+        let owned = OwnedConsoleName::from(cloned);
+        assert_eq!(owned.as_c_str().as_ptr(), original);
+        assert_eq!(owned.as_c_str(), c"mixed-name");
+        assert_eq!(
+            Box::<ConsoleName>::try_from(c"bad name"),
+            Err(EngineError::InvalidName)
+        );
+
+        let value = Box::<CvarValue>::try_from(c"\xff").unwrap();
+        let cloned = value.clone();
+        assert_eq!(cloned, value);
+        assert_ne!(cloned.as_c_str().as_ptr(), value.as_c_str().as_ptr());
+        assert_eq!(value.as_c_str(), c"\xff");
+        let original = value.as_c_str().as_ptr();
+        let native: Box<CStr> = value.into();
+        assert_eq!(native.as_ptr(), original);
+        assert_eq!(&*native, c"\xff");
+        let value = Box::<CvarValue>::try_from(native).unwrap();
+        assert_eq!(value.as_c_str().as_ptr(), original);
+        assert_eq!(value.as_c_str(), c"\xff");
+        let oversized = CString::new(vec![b'x'; 1024]).unwrap();
+        assert_eq!(
+            Box::<CvarValue>::try_from(Box::<CStr>::from(oversized.as_c_str())),
+            Err(EngineError::InvalidValue)
+        );
+        assert_eq!(
+            Box::<CvarValue>::try_from(oversized),
+            Err(EngineError::InvalidValue)
         );
     }
 
     #[test]
     fn command_exposes_its_normalized_console_name() {
         let command = Command {
-            name: crate::console_name!(c"RUST_HELLO"),
+            name: crate::console_name!(c"RUST_HELLO").to_owned(),
             args: Vec::new(),
         };
         let name: &ConsoleName = command.name();
         assert_eq!(name.as_c_str(), c"rust_hello");
+        assert_eq!(command.clone().name(), name);
     }
 
     #[test]
     fn cvar_values_borrow_native_bytes_and_enforce_the_inclusive_limit() {
         assert_eq!(crate::cvar_value!(c"").as_c_str(), c"");
         let maximum = CString::new(vec![0xff_u8; 1023]).unwrap();
-        let value = CvarValue::try_from(maximum.as_c_str()).unwrap();
+        let value = CvarValue::new(maximum.as_c_str()).unwrap();
         assert_eq!(value.as_c_str().as_ptr(), maximum.as_ptr());
         assert_eq!(value.as_c_str().to_bytes(), &[0xff; 1023]);
         let oversized = CString::new(vec![b'x'; 1024]).unwrap();
         assert_eq!(
-            CvarValue::try_from(oversized.as_c_str()),
+            CvarValue::new(oversized.as_c_str()),
             Err(EngineError::InvalidValue)
         );
     }
 
     #[test]
     fn irreversible_registrations_share_a_bounded_name_budget() {
-        assert!(reserve_name(&crate::console_name!(c"Test"), true).is_ok());
+        assert!(reserve_name(crate::console_name!(c"Test"), true).is_ok());
         assert_eq!(
-            reserve_name(&crate::console_name!(c"test"), true),
+            reserve_name(crate::console_name!(c"test"), true),
             Err(EngineError::RegistrationRejected)
         );
         assert_eq!(
-            reserve_name(&crate::console_name!(c"TEST"), false),
+            reserve_name(crate::console_name!(c"TEST"), false),
             Err(EngineError::AlreadyRegistered)
         );
         for index in 1..MAX_CONSOLE_REGISTRATIONS {
             assert!(
                 reserve_name(
-                    &ConsoleName::try_from(
+                    &OwnedConsoleName::try_from(
                         CString::new(format!("test{index}")).unwrap().as_c_str()
                     )
                     .unwrap(),
@@ -654,7 +974,7 @@ mod tests {
             );
         }
         assert_eq!(
-            reserve_name(&crate::console_name!(c"one_more"), true),
+            reserve_name(crate::console_name!(c"one_more"), true),
             Err(EngineError::RegistrationLimit)
         );
     }

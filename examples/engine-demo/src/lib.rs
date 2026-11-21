@@ -1,7 +1,7 @@
 use metamod_rs::prelude::*;
 use std::ffi::CString;
 
-static MESSAGE: ConsoleName = console_name!(c"RUST_HELLO_MESSAGE");
+static MESSAGE: &ConsoleName = console_name!(c"RUST_HELLO_MESSAGE");
 
 fn c_string(bytes: impl Into<Vec<u8>>) -> CString {
     CString::new(bytes).expect("demo text contains no NUL bytes")
@@ -57,11 +57,11 @@ impl Plugin for EngineDemo {
         if !self.first_frame_seen {
             self.first_frame_seen = true;
             let server = ctx.server();
-            match server.cvar(&MESSAGE) {
+            match server.cvar(MESSAGE) {
                 Ok(Some(_)) => {}
                 Ok(None) => {
                     if let Err(error) =
-                        server.register_cvar(&MESSAGE, cvar_value!(c"Hello from Rust!"))
+                        server.register_cvar(MESSAGE, cvar_value!(c"Hello from Rust!"))
                     {
                         server.print(&c_string(format!(
                             "Could not register rust_hello_message: {error}\n"
@@ -72,17 +72,17 @@ impl Plugin for EngineDemo {
                     "Could not read rust_hello_message: {error}\n"
                 ))),
             }
-            if let Err(error) = server.register_command(&console_name!(c"rust_hello")) {
+            if let Err(error) = server.register_command(console_name!(c"rust_hello")) {
                 server.print(&c_string(format!(
                     "Could not register rust_hello: {error}\n"
                 )));
             }
-            if let Err(error) = server.register_command(&console_name!(c"rust_trace")) {
+            if let Err(error) = server.register_command(console_name!(c"rust_trace")) {
                 server.print(&c_string(format!(
                     "Could not register rust_trace: {error}\n"
                 )));
             }
-            if let Err(error) = server.register_command(&console_name!(c"rust_entities")) {
+            if let Err(error) = server.register_command(console_name!(c"rust_entities")) {
                 server.print(&c_string(format!(
                     "Could not register rust_entities: {error}\n"
                 )));
@@ -174,14 +174,14 @@ impl Plugin for EngineDemo {
         }
         if let Some(argument) = command.arg(0)
             && let Err(error) =
-                CvarValue::try_from(argument).and_then(|value| server.set_cvar(&MESSAGE, value))
+                CvarValue::new(argument).and_then(|value| server.set_cvar(MESSAGE, value))
         {
             server.print(&c_string(format!(
                 "Could not update rust_hello_message: {error}\n"
             )));
             return;
         }
-        match server.cvar(&MESSAGE) {
+        match server.cvar(MESSAGE) {
             Ok(Some(message)) => {
                 let mut line = message.into_bytes();
                 if !line.ends_with(b"\n") {

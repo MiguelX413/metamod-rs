@@ -21,7 +21,7 @@ fn ignore_intentionally_retained<T: ?Sized>(allocation: &T) {
     unsafe { __lsan_ignore_object(std::ptr::from_ref(allocation).cast()) };
 }
 
-pub use engine::{Command, ConsoleName, CvarValue, EngineError, PlayerInfo};
+pub use engine::{Command, ConsoleName, CvarValue, EngineError, OwnedConsoleName, PlayerInfo};
 pub use hooks::{HookResult, KeyValueEvent, PostHookResult};
 pub use trace::{
     EntityError, EntityHandle, EntityInfo, EntityKeyValues, EntityKind, EntitySpatial, Hull,
@@ -42,9 +42,9 @@ pub mod prelude {
     pub use crate::{
         Command, ConsoleName, Context, CvarValue, EngineError, EntityError, EntityHandle,
         EntityInfo, EntityKeyValues, EntityKind, EntitySpatial, HookResult, Hull, KeyValueEvent,
-        Metadata, PlayerId, PlayerInfo, PlayerSlot, PlayerUserId, Plugin, PostHookResult, Server,
-        TraceError, TraceMonsters, TraceOptions, TracePlane, TraceResult, TraceSegment,
-        console_name, cvar_value, export_plugin,
+        Metadata, OwnedConsoleName, PlayerId, PlayerInfo, PlayerSlot, PlayerUserId, Plugin,
+        PostHookResult, Server, TraceError, TraceMonsters, TraceOptions, TracePlane, TraceResult,
+        TraceSegment, console_name, cvar_value, export_plugin,
     };
 }
 
@@ -52,7 +52,7 @@ pub mod prelude {
 ///
 /// ```
 /// use metamod_rs::{ConsoleName, console_name};
-/// static NAME: ConsoleName = console_name!(c"MY_PLUGIN");
+/// static NAME: &ConsoleName = console_name!(c"MY_PLUGIN");
 /// assert_eq!(NAME.as_c_str(), c"my_plugin");
 /// ```
 ///
@@ -76,7 +76,7 @@ macro_rules! console_name {
 ///
 /// ```
 /// use metamod_rs::{CvarValue, cvar_value};
-/// const VALUE: CvarValue<'static> = cvar_value!(c"\xff");
+/// const VALUE: &CvarValue = cvar_value!(c"\xff");
 /// assert_eq!(VALUE.as_c_str().to_bytes(), &[0xff]);
 /// ```
 ///

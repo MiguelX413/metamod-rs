@@ -890,7 +890,7 @@ mod tests {
                     assert_eq!(
                         context
                             .server()
-                            .register_cvar(&name, crate::cvar_value!(c"value")),
+                            .register_cvar(name, crate::cvar_value!(c"value")),
                         Err(crate::EngineError::RegistrationRejected)
                     );
                 }
@@ -947,9 +947,7 @@ mod tests {
 
             fn start_frame(&mut self, context: &mut Context<'_>) {
                 assert_eq!(
-                    context
-                        .server()
-                        .cvar(&crate::console_name!(c"test_reentry")),
+                    context.server().cvar(crate::console_name!(c"test_reentry")),
                     Err(crate::EngineError::Unavailable)
                 );
             }
@@ -996,7 +994,7 @@ mod tests {
                 assert_eq!(
                     context
                         .server()
-                        .cvar(&crate::console_name!(c"test_shutdown")),
+                        .cvar(crate::console_name!(c"test_shutdown")),
                     Err(crate::EngineError::Unavailable)
                 );
             }

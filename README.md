@@ -98,13 +98,15 @@ explicitly in the attribute. At the server console with that demo installed,
 `rust_hello "New message"` updates it. `Server::cvar` returns an owned
 `CString`, with `Ok(None)` for an absent variable. Values supplied by Rust
 must fit in 1,023 bytes excluding the terminator. Construct a borrowed
-`CvarValue` with `CvarValue::try_from(value)` before calling
+`CvarValue` with `CvarValue::new(value)` before calling
 `set_cvar` or `register_cvar`. Validation needs no allocation and preserves
 the original bytes. Registration copies the value into retained storage.
-Construct a `ConsoleName` with `ConsoleName::try_from(raw_name)` for runtime input.
-Command registration and CVar operations borrow that validated name.
-Construction checks the syntax and normalizes ASCII case once. Reuse the
-name for subsequent reads and writes.
+Use `ConsoleName::new(raw_name)` to borrow a validated lowercase name
+without allocating. Use `OwnedConsoleName::try_from(raw_name)` to own an
+already-lowercase name from a `&CStr` or `CString`. Use
+`OwnedConsoleName::normalize` to validate and lowercase a `CString` in place.
+Command registration and CVar operations borrow the validated name, so an
+owned name can be reused for subsequent reads and writes.
 Values and console output can contain non-UTF-8 bytes.
 
 For literals, `console_name!` and `cvar_value!` validate at compile time:
@@ -112,12 +114,19 @@ For literals, `console_name!` and `cvar_value!` validate at compile time:
 ```rust
 use metamod_rs::prelude::*;
 
-static NAME: ConsoleName = console_name!(c"MY_PLUGIN_SETTING");
-const DEFAULT: CvarValue<'static> = cvar_value!(c"1");
+static NAME: &ConsoleName = console_name!(c"MY_PLUGIN_SETTING");
+const DEFAULT: &CvarValue = cvar_value!(c"1");
 ```
 
-The name macro stores normalized lowercase bytes without allocating.
-Use `TryFrom<&CStr>` for runtime input.
+Both macros return static references. The name macro stores normalized
+lowercase bytes without allocating.
+
+`Box<ConsoleName>` and `Box<CvarValue>` accept fallible conversions from
+`&CStr`, `CString`, and `Box<CStr>`. All these conversions preserve the
+input bytes. Converting from `Box<CStr>` also reuses the allocation.
+Use `ConsoleName::normalize_boxed` to lowercase a boxed name in place.
+Both boxes also support cloning and
+infallible conversion from an already validated reference.
 
 Register names from an attached callback such as `start_frame` or
 `server_activate`. Use a plugin-specific prefix and register each name once

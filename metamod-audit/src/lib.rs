@@ -10,10 +10,10 @@ use std::{
 const PREFIX: &str = "MM_AUDIT ";
 const MAX_EVENTS: u32 = 4096;
 const SAMPLE_COUNT: usize = 64;
-const CVAR: ConsoleName = console_name!(c"mm_audit_value");
-const STATUS: ConsoleName = console_name!(c"mm_audit_status");
-const RUN: ConsoleName = console_name!(c"mm_audit_run");
-const REPORT: ConsoleName = console_name!(c"mm_audit_report");
+const CVAR: &ConsoleName = console_name!(c"mm_audit_value");
+const STATUS: &ConsoleName = console_name!(c"mm_audit_status");
+const RUN: &ConsoleName = console_name!(c"mm_audit_run");
+const REPORT: &ConsoleName = console_name!(c"mm_audit_report");
 
 // Keep the protocol dependency-free. Native text is converted lossily and
 // bounded before quoting, and is never used as a format string.
@@ -243,7 +243,7 @@ impl Audit {
 
     fn console(&mut self, ctx: &Context<'_>) {
         let server = ctx.server();
-        let first = server.cvar(&CVAR);
+        let first = server.cvar(CVAR);
         if self.cvar_registered
             && let Ok(Some(previous)) = first
         {
@@ -253,8 +253,8 @@ impl Audit {
             } else {
                 c"audit-a"
             };
-            let write = server.set_cvar(&CVAR, CvarValue::try_from(marker).expect("short marker"));
-            let after = server.cvar(&CVAR);
+            let write = server.set_cvar(CVAR, CvarValue::new(marker).expect("short marker"));
+            let after = server.cvar(CVAR);
             let matched =
                 write.is_ok() && after.as_ref().ok().and_then(|v| v.as_deref()) == Some(marker);
             self.check(
@@ -281,8 +281,8 @@ impl Audit {
                     "native write did not establish a different value",
                 );
             }
-            if let Ok(previous) = CvarValue::try_from(previous.as_c_str()) {
-                let _ = server.set_cvar(&CVAR, previous);
+            if let Ok(previous) = CvarValue::new(previous.as_c_str()) {
+                let _ = server.set_cvar(CVAR, previous);
             }
         } else {
             self.result(
@@ -303,11 +303,11 @@ impl Audit {
         self.check(
             ctx,
             LIMIT,
-            CvarValue::try_from(at_limit.as_c_str()).is_ok()
-                && CvarValue::try_from(above_limit.as_c_str()).is_err(),
+            CvarValue::new(at_limit.as_c_str()).is_ok()
+                && CvarValue::new(above_limit.as_c_str()).is_err(),
             "validated local inputs at 1023 and 1024 bytes",
         );
-        let missing = server.cvar(&console_name!(c"mm_audit_unregistered_probe"));
+        let missing = server.cvar(console_name!(c"mm_audit_unregistered_probe"));
         let negative = ctx.entity_at(-1);
         let invalid_index_safe = matches!(negative, Ok(None) | Err(EntityError::Unavailable));
         match missing {
@@ -414,7 +414,7 @@ impl Audit {
         }
         let now = Instant::now();
         let count = (0..SAMPLE_COUNT)
-            .take_while(|_| matches!(ctx.server().cvar(&CVAR), Ok(Some(_))))
+            .take_while(|_| matches!(ctx.server().cvar(CVAR), Ok(Some(_))))
             .count();
         self.check(
             ctx,
@@ -451,9 +451,9 @@ impl Plugin for Audit {
         self.ready = true;
         let server = ctx.server();
         self.cvar_registered = server
-            .register_cvar(&CVAR, cvar_value!(c"audit-default"))
+            .register_cvar(CVAR, cvar_value!(c"audit-default"))
             .is_ok();
-        let registrations = [&STATUS, &RUN, &REPORT].map(|name| server.register_command(name));
+        let registrations = [STATUS, RUN, REPORT].map(|name| server.register_command(name));
         let submitted = registrations.iter().all(Result::is_ok);
         self.check(ctx, READY, submitted, format!("{registrations:?}"));
         self.emit(
