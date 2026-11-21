@@ -14,7 +14,7 @@ Push-Location $repo
 try {
     $env:CARGO_TARGET_DIR = Join-Path $work 'target'
     $target = 'i686-pc-windows-msvc'
-    cargo build --locked --release --target $target -p hello-world -p engine-demo
+    cargo build --locked --release --target $target -p hello-world -p engine-demo -p metamod-audit
     cargo build --locked --target $target -p metamod-sys --example layout
 
     $includes = @(
@@ -35,7 +35,7 @@ try {
         Compare-Object $cppLayout $rustLayout | Out-Host
         throw 'Rust and C++ ABI layouts differ.'
     }
-    foreach ($example in 'hello-world', 'engine-demo') {
+    foreach ($example in 'hello-world', 'engine-demo', 'metamod-audit') {
         $dll = $example.Replace('-', '_') + '.dll'
         $plugin = Join-Path $env:CARGO_TARGET_DIR "$target/release/$dll"
         $pe = llvm-readobj --file-headers --coff-exports $plugin

@@ -3,6 +3,7 @@ members = [
     "metamod-sys",
     "metamod-rs",
     "metamod-macros",
+    "metamod-audit",
     "examples/hello-world",
     "examples/engine-demo",
 ]

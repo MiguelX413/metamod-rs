@@ -1,6 +1,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <thread>
 #include <extdll.h>
 #include <meta_api.h>
@@ -22,6 +23,13 @@ static bool discovery_transition;
 static int logged;
 static int keyvalue_logs;
 static bool engine_demo;
+static bool runtime_audit;
+static bool audit_reentry;
+static int audit_logs;
+static void (*audit_status)();
+static void (*audit_run)();
+static void (*audit_report)();
+static std::string audit_output;
 
 static cvar_t *registered_cvar;
 static char cvar_value[1024];
@@ -32,7 +40,7 @@ static bool trace_transition;
 static bool expect_inactive_trace;
 static bool shutdown_from_trace;
 static int trace_index_lookups;
-static const char *args[] = {"RUST_HELLO", nullptr};
+static const char *args[] = {"RUST_HELLO", nullptr, nullptr};
 static bool reenter_argv;
 static bool expire_player;
 static bool reuse_player_during_lookup;
@@ -46,7 +54,7 @@ static cvar_t *find_cvar(const char *name) {
 }
 
 static void register_cvar(cvar_t *cvar) {
-    assert(!registered_cvar && std::strcmp(cvar->name, "rust_hello_message") == 0);
+    assert(!registered_cvar && std::strcmp(cvar->name, runtime_audit ? "mm_audit_value" : "rust_hello_message") == 0);
     assert(cvar->flags == 0 && cvar->next == nullptr);
 #ifdef METAMOD_LOADER_LSAN
     // The SDK retains these allocations across shutdown. Mark the initial
@@ -75,7 +83,14 @@ static void register_command(const char *name, void (*callback)()) {
 #ifdef METAMOD_LOADER_LSAN
     __lsan_ignore_object(name);
 #endif
-    if (std::strcmp(name, "rust_trace") == 0) {
+    if (runtime_audit) {
+        void (**slot)() = nullptr;
+        if (std::strcmp(name, "mm_audit_status") == 0) slot = &audit_status;
+        if (std::strcmp(name, "mm_audit_run") == 0) slot = &audit_run;
+        if (std::strcmp(name, "mm_audit_report") == 0) slot = &audit_report;
+        assert(slot && !*slot);
+        *slot = callback;
+    } else if (std::strcmp(name, "rust_trace") == 0) {
         assert(!trace_command);
         trace_command = callback;
     } else if (std::strcmp(name, "rust_entities") == 0) {
@@ -88,7 +103,7 @@ static void register_command(const char *name, void (*callback)()) {
 }
 
 static int command_argc() {
-    return args[1] ? 2 : 1;
+    return args[2] ? 3 : args[1] ? 2 : 1;
 }
 
 static const char *command_argv(int index) {
@@ -160,8 +175,9 @@ static void trace_line(const float *start, const float *end, int mode, edict_t *
 }
 
 static void trace_hull(const float *start, const float *end, int mode, int hull, edict_t *skip, TraceResult *out) {
-    assert(start[2] == 64 && end[2] == -64 && mode == ignore_monsters && hull == human_hull);
-    assert(skip == &player);
+    assert(start[2] == 64 && end[2] == -64 && hull == human_hull);
+    assert(runtime_audit ? (mode == dont_ignore_monsters && !skip) :
+        (mode == ignore_monsters && skip == &player));
     out->flFraction = 1.0f;
 }
 
@@ -186,6 +202,19 @@ static int index_of_edict(const edict_t *edict) {
 }
 
 static void server_print(const char *message) {
+    if (runtime_audit) {
+        assert(std::strncmp(message, "MM_AUDIT ", 9) == 0);
+        ++audit_logs;
+        audit_output += message;
+        std::fputs(message, stdout);
+        if (audit_reentry && std::strstr(message, "\"kind\":\"ready\"")) {
+            audit_reentry = false;
+            const auto before = audit_logs;
+            post_hooks.pfnClientPutInServer(&player);
+            assert(audit_logs == before);
+        }
+        return;
+    }
     if (expect_inactive_trace) {
         assert(std::strcmp(message, "Line trace failed: tracing requires an active map and engine callbacks\n") == 0);
         expect_inactive_trace = false;
@@ -274,10 +303,58 @@ static Fn symbol(DLHANDLE module, const char *name) {
     return function;
 }
 
+static void exercise_audit() {
+    assert(hooks.pfnKeyValue && hooks.pfnAllowLagCompensation && post_hooks.pfnAllowLagCompensation);
+    KeyValueData data{nullptr, "classname", "worldspawn", 17};
+    hooks.pfnKeyValue(&world, &data);
+    assert(data.fHandled == 17);
+    hooks.pfnServerActivate(nullptr, 0, 0);
+    post_hooks.pfnServerActivate(nullptr, 0, 0);
+    audit_reentry = true;
+    hooks.pfnStartFrame();
+    assert(!audit_reentry && audit_status && audit_run && audit_report);
+    args[0] = "mm_audit_status";
+    audit_status();
+    hooks.pfnClientDisconnect(&player);
+    ++player.serialnumber;
+    post_hooks.pfnClientPutInServer(&player);
+    hooks.pfnServerDeactivate();
+    hooks.pfnServerActivate(nullptr, 0, 0);
+    post_hooks.pfnServerActivate(nullptr, 0, 0);
+    assert(hooks.pfnAllowLagCompensation() == 0 && globals.mres == MRES_IGNORED);
+    int original = 1;
+    globals.orig_ret = &original;
+    assert(post_hooks.pfnAllowLagCompensation() == 0 && globals.mres == MRES_IGNORED);
+    globals.orig_ret = nullptr;
+    args[0] = "mm_audit_run";
+    args[1] = "all";
+    args[2] = "audit two words";
+    audit_run();
+    args[0] = "mm_audit_report";
+    args[1] = nullptr;
+    args[2] = nullptr;
+    audit_report();
+    assert(audit_output.find("\"result\":\"FAIL\"") == std::string::npos);
+    for (const char *expected : {"map.stale.v1", "player.reuse.v1", "entity.snapshot.v1",
+             "cvar.roundtrip.v1", "command.arguments.v1", "trace.line.v1",
+             "trace.hull.v1", "resources.repeat.v1"}) {
+        assert(audit_output.find(std::string("\"test\":\"") + expected + "\",\"result\":\"PASS\"") != std::string::npos);
+    }
+    assert(!audit_reentry && audit_output.find("\"kind\":\"report\"") != std::string::npos);
+    // Shutdown records use stderr because engine access is revoked.
+    // Keep the combined fixture transcript line-aligned under redirection.
+    std::fflush(stdout);
+    new_hooks.pfnGameShutdown();
+    const auto before = audit_logs;
+    audit_report();
+    assert(audit_logs == before);
+}
+
 int main(int argc, char **argv) {
     assert(argc == 3);
     engine_demo = std::strcmp(argv[2], "engine-demo") == 0;
-    assert(engine_demo || std::strcmp(argv[2], "hello-world") == 0);
+    runtime_audit = std::strcmp(argv[2], "metamod-audit") == 0;
+    assert(engine_demo || runtime_audit || std::strcmp(argv[2], "hello-world") == 0);
     DLHANDLE module = DLOPEN(argv[1]);
     if (!module) {
 #ifdef _WIN32
@@ -340,8 +417,8 @@ int main(int argc, char **argv) {
     auto *saved_info = info;
     assert(query(META_INTERFACE_VERSION, &info, &utilities));
     assert(info == saved_info);
-    assert(std::strcmp(info->name, engine_demo ? "Rust Engine Demo" : "Rust Hello World") == 0);
-    assert(std::strcmp(info->logtag, engine_demo ? "RUSTENGINE" : "RUSTHELLO") == 0);
+    assert(std::strcmp(info->name, runtime_audit ? "Rust Runtime Audit" : engine_demo ? "Rust Engine Demo" : "Rust Hello World") == 0);
+    assert(std::strcmp(info->logtag, runtime_audit ? "RUSTAUDIT" : engine_demo ? "RUSTENGINE" : "RUSTHELLO") == 0);
     if (engine_demo) {
         assert(std::strcmp(info->version, "0.1.0") == 0);
         assert(std::strcmp(info->author, "metamod-rs contributors") == 0);
@@ -367,6 +444,11 @@ int main(int argc, char **argv) {
     assert(version == NEW_DLL_FUNCTIONS_VERSION && !new_hooks.pfnGameShutdown);
     assert(functions.pfnGetNewDLLFunctions(&new_hooks, &version));
     assert(new_hooks.pfnGameShutdown && !new_hooks.pfnShouldCollide);
+    if (runtime_audit) {
+        assert(!detach(PT_ANYTIME, PNL_COMMAND));
+        exercise_audit();
+        return 0;
+    }
     assert((hooks.pfnKeyValue != nullptr) == engine_demo && !post_hooks.pfnKeyValue);
     if (engine_demo) {
         KeyValueData data{nullptr, "classname", "worldspawn", 17};

@@ -39,6 +39,8 @@ jobs:
         run: cargo +stable clippy --locked --workspace --all-targets -- -D warnings
       - name: Test workspace
         run: cargo +stable test --locked --workspace
+      - name: Test runtime audit reporting and orchestration
+        run: python3 -m unittest discover -s verify/audit -v
 
   linux-i686:
     name: Linux i686 ABI and loader

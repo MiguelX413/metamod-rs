@@ -1,0 +1,52 @@
+name: GoldSrc runtime audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Provisioned runner OS
+        type: choice
+        options:
+          - Linux
+          - Windows
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    if: vars.GOLDSRC_AUDIT_ENABLED == 'true' && github.ref_name == github.event.repository.default_branch
+    runs-on: [self-hosted, goldsrc-audit, "${{ inputs.platform }}"]
+    timeout-minutes: 90
+    env:
+      GOLDSRC_AUDIT_LINUX_CONFIG: "${{ vars.GOLDSRC_AUDIT_LINUX_CONFIG }}"
+      GOLDSRC_AUDIT_WINDOWS_CONFIG: "${{ vars.GOLDSRC_AUDIT_WINDOWS_CONFIG }}"
+      GOLDSRC_AUDIT_PLATFORM: "${{ inputs.platform }}"
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          submodules: true
+      - name: Audit configured local installations
+        shell: pwsh
+        run: |
+          $config = if ($env:GOLDSRC_AUDIT_PLATFORM -eq 'Linux') {
+            $env:GOLDSRC_AUDIT_LINUX_CONFIG
+          } else {
+            $env:GOLDSRC_AUDIT_WINDOWS_CONFIG
+          }
+          if (-not $config) { throw 'Configure a local runtime matrix for this runner.' }
+          $output = Join-Path $env:RUNNER_TEMP "goldsrc-audit-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $env:GOLDSRC_AUDIT_OUTPUT = $output
+          "GOLDSRC_AUDIT_OUTPUT=$output" >> $env:GITHUB_ENV
+          python verify/audit/runner.py run $config $output --build --platform $env:GOLDSRC_AUDIT_PLATFORM
+          exit $LASTEXITCODE
+      - name: Preserve structured reports
+        if: always() && env.GOLDSRC_AUDIT_OUTPUT != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: goldsrc-audit-${{ inputs.platform }}
+          path: |
+            ${{ env.GOLDSRC_AUDIT_OUTPUT }}/report.json
+            ${{ env.GOLDSRC_AUDIT_OUTPUT }}/report.md
+            ${{ env.GOLDSRC_AUDIT_OUTPUT }}/*/events.jsonl

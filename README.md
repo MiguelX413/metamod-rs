@@ -478,12 +478,12 @@ sanitizer runtimes and leaves the Rust libraries uninstrumented. The
 marks only the specific CVar and command allocations it receives that
 the SDK intentionally retains for process lifetime.
 
-Set `METAMOD_SANITIZE_PLUGIN=1` to build both Rust plugins with nightly ASan
+Set `METAMOD_SANITIZE_PLUGIN=1` to build the Rust plugins with nightly ASan
 and run them under the Clang-instrumented C++ loader. This mode requires
 the nightly i686 Rust target, matching Clang and Clang++ drivers, and the
 32-bit Clang sanitizer runtimes. Set `METAMOD_SANITIZER_CLANG` and
 `METAMOD_SANITIZER_CXX` if the drivers have versioned names. The loader
-provides the ASan runtime for both plugins and keeps leak detection enabled.
+provides the ASan runtime for the plugins and keeps leak detection enabled.
 
 The separate Linux Rust sanitizer job runs library tests with nightly
 AddressSanitizer on x86_64 and i686. Both variants instrument the target
@@ -551,3 +551,10 @@ linking exception addresses linking with Valve's engine and mods.
 - The FWGS template illustrates Metamod plugin hook registration and Win32 exports.
   The reviewed revision had no top-level license granting reuse of the
   template. [FWGS Metamod plugin template](https://github.com/FWGS/metamod-plugin-template/tree/b9dbed28728722e8fc751200f824f72e3b8e7123)
+
+## GoldSrc runtime audit
+
+The `metamod-audit` plugin and Python runner exercise the SDK against
+independently configured local GoldSrc servers and produce comparable
+JSONL, JSON, and Markdown reports. See the [runtime audit guide](docs/runtime-audit.md)
+for the matrix, isolated staging, and manual console protocol.

@@ -16,9 +16,9 @@ if [[ ${METAMOD_SANITIZE_PLUGIN:-0} == 1 ]]; then
     export CXX="${METAMOD_SANITIZER_CXX:-clang++}"
     METAMOD_SANITIZE_LOADER=1
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Zsanitizer=address -Zexternal-clangrt -Clinker=$clang" \
-        cargo +nightly build --locked --release --target i686-unknown-linux-gnu -p hello-world -p engine-demo
+        cargo +nightly build --locked --release --target i686-unknown-linux-gnu -p hello-world -p engine-demo -p metamod-audit
 else
-    cargo build --locked --release --target i686-unknown-linux-gnu -p hello-world -p engine-demo
+    cargo build --locked --release --target i686-unknown-linux-gnu -p hello-world -p engine-demo -p metamod-audit
 fi
 cargo build --locked --target i686-unknown-linux-gnu -p metamod-sys --example layout
 
@@ -34,7 +34,7 @@ fi
 "$work/layout" > "$work/c-layout"
 "$CARGO_TARGET_DIR/i686-unknown-linux-gnu/debug/examples/layout" > "$work/rust-layout"
 diff -u "$work/c-layout" "$work/rust-layout"
-for example in hello-world engine-demo; do
+for example in hello-world engine-demo metamod-audit; do
     plugin="$CARGO_TARGET_DIR/i686-unknown-linux-gnu/release/lib${example//-/_}.so"
     if [[ ${METAMOD_SANITIZE_PLUGIN:-0} == 1 ]]; then
         nm -D --undefined-only "$plugin" > "$work/imports"
