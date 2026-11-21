@@ -786,7 +786,10 @@ mod tests {
             fn start_frame(&mut self, context: &mut Context<'_>) {
                 for name in [c"test_rejected", c"TEST_REJECTED", c"test_rejected"] {
                     assert_eq!(
-                        context.server().register_cvar(name, c"value"),
+                        context.server().register_cvar(
+                            &crate::ConsoleName::try_from(name).unwrap(),
+                            crate::CvarValue::try_from(c"value").unwrap()
+                        ),
                         Err(crate::EngineError::RegistrationRejected)
                     );
                 }

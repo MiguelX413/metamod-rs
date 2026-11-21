@@ -1,7 +1,8 @@
 use metamod_rs::prelude::*;
-use std::ffi::{CStr, CString};
+use std::{ffi::CString, sync::LazyLock};
 
-const MESSAGE: &CStr = c"rust_hello_message";
+static MESSAGE: LazyLock<ConsoleName> =
+    LazyLock::new(|| ConsoleName::try_from(c"RUST_HELLO_MESSAGE").expect("valid demo CVar name"));
 
 fn c_string(bytes: impl Into<Vec<u8>>) -> CString {
     CString::new(bytes).expect("demo text contains no NUL bytes")
@@ -57,10 +58,12 @@ impl Plugin for EngineDemo {
         if !self.first_frame_seen {
             self.first_frame_seen = true;
             let server = ctx.server();
-            match server.cvar(MESSAGE) {
+            match server.cvar(&MESSAGE) {
                 Ok(Some(_)) => {}
                 Ok(None) => {
-                    if let Err(error) = server.register_cvar(MESSAGE, c"Hello from Rust!") {
+                    if let Err(error) = CvarValue::try_from(c"Hello from Rust!")
+                        .and_then(|value| server.register_cvar(&MESSAGE, value))
+                    {
                         server.print(&c_string(format!(
                             "Could not register rust_hello_message: {error}\n"
                         )));
@@ -70,17 +73,23 @@ impl Plugin for EngineDemo {
                     "Could not read rust_hello_message: {error}\n"
                 ))),
             }
-            if let Err(error) = server.register_command(c"rust_hello") {
+            if let Err(error) =
+                ConsoleName::try_from(c"rust_hello").and_then(|name| server.register_command(&name))
+            {
                 server.print(&c_string(format!(
                     "Could not register rust_hello: {error}\n"
                 )));
             }
-            if let Err(error) = server.register_command(c"rust_trace") {
+            if let Err(error) =
+                ConsoleName::try_from(c"rust_trace").and_then(|name| server.register_command(&name))
+            {
                 server.print(&c_string(format!(
                     "Could not register rust_trace: {error}\n"
                 )));
             }
-            if let Err(error) = server.register_command(c"rust_entities") {
+            if let Err(error) = ConsoleName::try_from(c"rust_entities")
+                .and_then(|name| server.register_command(&name))
+            {
                 server.print(&c_string(format!(
                     "Could not register rust_entities: {error}\n"
                 )));
@@ -91,7 +100,7 @@ impl Plugin for EngineDemo {
 
     fn server_command(&mut self, ctx: &mut Context<'_>, command: &Command) {
         let server = ctx.server();
-        if command.name() == c"rust_entities" {
+        if command.name().as_c_str() == c"rust_entities" {
             let entities = if let Some(argument) = command.arg(0) {
                 let Ok(index) = argument.to_string_lossy().parse::<i32>() else {
                     server.print(c"rust_entities expects an integer edict index\n");
@@ -136,7 +145,7 @@ impl Plugin for EngineDemo {
             }
             return;
         }
-        if command.name() == c"rust_trace" {
+        if command.name().as_c_str() == c"rust_trace" {
             let start = [0.0, 0.0, 64.0];
             let end = [0.0, 0.0, -64.0];
             match server.trace_line(start, end, TraceOptions::default()) {
@@ -164,15 +173,19 @@ impl Plugin for EngineDemo {
             }
             return;
         }
+        if command.name().as_c_str() != c"rust_hello" {
+            return;
+        }
         if let Some(argument) = command.arg(0)
-            && let Err(error) = server.set_cvar(MESSAGE, argument)
+            && let Err(error) =
+                CvarValue::try_from(argument).and_then(|value| server.set_cvar(&MESSAGE, value))
         {
             server.print(&c_string(format!(
                 "Could not update rust_hello_message: {error}\n"
             )));
             return;
         }
-        match server.cvar(MESSAGE) {
+        match server.cvar(&MESSAGE) {
             Ok(Some(message)) => {
                 let mut line = message.into_bytes();
                 if !line.ends_with(b"\n") {

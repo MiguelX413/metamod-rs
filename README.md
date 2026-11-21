@@ -97,9 +97,15 @@ explicitly in the attribute. At the server console with that demo installed,
 `rust_hello` prints the current `rust_hello_message` value and
 `rust_hello "New message"` updates it. `Server::cvar` returns an owned
 `CString`, with `Ok(None)` for an absent variable. Values supplied by Rust
-must fit in 1,023 bytes. Command and CVar names and CVar values accept
-`&CStr`. The SDK still validates name syntax and length and the value's byte
-limit. Values and console output can contain non-UTF-8 bytes.
+must fit in 1,023 bytes excluding the terminator. Construct a borrowed
+`CvarValue` with `CvarValue::try_from(value)` before calling
+`set_cvar` or `register_cvar`. Validation needs no allocation and preserves
+the original bytes. Registration copies the value into retained storage.
+Construct a `ConsoleName` with `ConsoleName::try_from(c"my_plugin_setting")`.
+Command registration and CVar operations borrow that validated name.
+Construction checks the syntax and normalizes ASCII case once. Reuse the
+name for subsequent reads and writes.
+Values and console output can contain non-UTF-8 bytes.
 
 Register names from an attached callback such as `start_frame` or
 `server_activate`. Use a plugin-specific prefix and register each name once
@@ -112,7 +118,9 @@ other plugin commands. Commands and CVars retain registration storage for
 the process lifetime. Registration is unavailable in `initialize`, where
 the plugin can still decline attachment. [Metamod registration code](https://github.com/alliedmodders/metamod-hl1/blob/18a10db686702e8ae9e0fcb5b5febf8881dc9c2d/metamod/reg_support.cpp) · [ReHLDS CVar implementation](https://github.com/rehlds/ReHLDS/blob/master/rehlds/engine/cvar.cpp)
 
-`Command::name()` identifies the registration. `arg(0)` is the first
+`Command::name()` returns a borrowed, normalized `&ConsoleName`. Use
+`command.name().as_c_str()` to compare it with a C-string literal.
+`arg(0)` is the first
 argument after the name. Arguments are copied as C strings before delivery,
 so deferred commands do not depend on the engine's transient argument buffer.
 Absent, oversized, or observably reentrant snapshots are skipped. The limit

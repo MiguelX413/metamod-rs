@@ -66,14 +66,14 @@ thread_local! {
 /// A command invocation with owned copies of the engine's argument tokens.
 #[derive(Clone, Debug)]
 pub struct Command {
-    name: &'static CStr,
+    name: ConsoleName,
     args: Vec<CString>,
 }
 
 impl Command {
     /// The registered command name in lowercase.
-    pub fn name(&self) -> &CStr {
-        self.name
+    pub fn name(&self) -> &ConsoleName {
+        &self.name
     }
 
     /// One zero-based argument after the command name.
@@ -126,25 +126,57 @@ impl fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
-fn name(value: &CStr) -> Result<CString, EngineError> {
-    let value = value.to_bytes();
-    if value.is_empty()
-        || value.len() > 63
-        || !value
-            .iter()
-            .copied()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-    {
-        return Err(EngineError::InvalidName);
+/// A validated, lowercase name shared by server commands and CVars.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ConsoleName(CString);
+
+impl ConsoleName {
+    /// Borrow the normalized native name.
+    pub fn as_c_str(&self) -> &CStr {
+        &self.0
     }
-    CString::new(value.to_ascii_lowercase()).map_err(|_| EngineError::InvalidName)
 }
 
-fn validate_value(value: &CStr) -> Result<(), EngineError> {
-    if value.to_bytes().len() > 1023 {
-        return Err(EngineError::InvalidValue);
+impl TryFrom<&CStr> for ConsoleName {
+    type Error = EngineError;
+
+    fn try_from(value: &CStr) -> Result<Self, Self::Error> {
+        let value = value.to_bytes();
+        if value.is_empty()
+            || value.len() > 63
+            || !value
+                .iter()
+                .copied()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return Err(EngineError::InvalidName);
+        }
+        CString::new(value.to_ascii_lowercase())
+            .map(Self)
+            .map_err(|_| EngineError::InvalidName)
     }
-    Ok(())
+}
+
+/// A borrowed CVar input of at most 1,023 bytes, excluding its terminator.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CvarValue<'a>(&'a CStr);
+
+impl<'a> CvarValue<'a> {
+    /// Return the original C string without copying or decoding it.
+    pub const fn as_c_str(self) -> &'a CStr {
+        self.0
+    }
+}
+
+impl<'a> TryFrom<&'a CStr> for CvarValue<'a> {
+    type Error = EngineError;
+
+    fn try_from(value: &'a CStr) -> Result<Self, Self::Error> {
+        if value.to_bytes().len() > 1023 {
+            return Err(EngineError::InvalidValue);
+        }
+        Ok(Self(value))
+    }
 }
 
 fn engine() -> Result<Engine, EngineError> {
@@ -174,7 +206,7 @@ fn registration_available() -> Result<(), EngineError> {
     }
 }
 
-fn reserve_name(name: CString, cvar: bool) -> Result<&'static CStr, EngineError> {
+fn reserve_name(name: &ConsoleName, cvar: bool) -> Result<&'static CStr, EngineError> {
     CVARS.with(|cvars| {
         COMMANDS.with(|commands| {
             let mut cvars = cvars.borrow_mut();
@@ -192,7 +224,7 @@ fn reserve_name(name: CString, cvar: bool) -> Result<&'static CStr, EngineError>
             if cvars.len() + commands.len() >= MAX_CONSOLE_REGISTRATIONS {
                 return Err(EngineError::RegistrationLimit);
             }
-            let name: &'static CStr = Box::leak(name.into_boxed_c_str());
+            let name: &'static CStr = Box::leak(name.as_c_str().to_owned().into_boxed_c_str());
             if cvar {
                 cvars.insert(name);
             } else {
@@ -205,14 +237,16 @@ fn reserve_name(name: CString, cvar: bool) -> Result<&'static CStr, EngineError>
 
 impl Server<'_, '_> {
     /// Register a server CVar from an attached callback. Use a plugin-specific name.
-    pub fn register_cvar(&self, input: &CStr, default: &CStr) -> Result<(), EngineError> {
+    pub fn register_cvar(
+        &self,
+        name: &ConsoleName,
+        default: CvarValue<'_>,
+    ) -> Result<(), EngineError> {
         registration_available()?;
-        let name = name(input)?;
-        validate_value(default)?;
         let engine = engine()?;
         let register = engine.register_cvar.ok_or(EngineError::Unavailable)?;
         if COMMANDS.with(|commands| commands.borrow().contains(name.as_c_str()))
-            || exists(engine, &name)?
+            || exists(engine, name.as_c_str())?
         {
             return Err(EngineError::AlreadyRegistered);
         }
@@ -223,7 +257,7 @@ impl Server<'_, '_> {
         // Reserve before crossing FFI. Even a failed or interrupted
         // attempt may have handed the name and CVar storage to the host.
         let name = reserve_name(name, true)?;
-        let initial = Box::leak(default.to_owned().into_boxed_c_str());
+        let initial = Box::leak(default.as_c_str().to_owned().into_boxed_c_str());
         let cvar = Box::into_raw(Box::new(cvar_t {
             name: name.as_ptr(),
             string: initial.as_ptr(),
@@ -239,47 +273,47 @@ impl Server<'_, '_> {
     }
 
     /// Copy the current value. An empty value differs from an unregistered CVar.
-    pub fn cvar(&self, input: &CStr) -> Result<Option<CString>, EngineError> {
-        let name = name(input)?;
+    pub fn cvar(&self, name: &ConsoleName) -> Result<Option<CString>, EngineError> {
         let engine = engine()?;
         let get = engine.get_cvar.ok_or(EngineError::Unavailable)?;
-        if !exists(engine, &name)? {
+        if !exists(engine, name.as_c_str())? {
             return Ok(None);
         }
         available()?;
         // SAFETY: Copy the synchronous engine result before making another native call.
-        let result = unsafe { get(name.as_ptr()) };
+        let result = unsafe { get(name.as_c_str().as_ptr()) };
         available()?;
         Ok(unsafe { copy_string(result, MAX_ENGINE_STRING) })
     }
 
     /// Set an existing CVar through the engine, which copies the supplied value.
-    pub fn set_cvar(&self, input: &CStr, new_value: &CStr) -> Result<(), EngineError> {
-        let name = name(input)?;
-        validate_value(new_value)?;
+    pub fn set_cvar(
+        &self,
+        name: &ConsoleName,
+        new_value: CvarValue<'_>,
+    ) -> Result<(), EngineError> {
         let engine = engine()?;
         let set = engine.set_cvar.ok_or(EngineError::Unavailable)?;
-        if !exists(engine, &name)? {
+        if !exists(engine, name.as_c_str())? {
             return Err(EngineError::UnknownCvar);
         }
         available()?;
         // SAFETY: Both input strings stay live through the synchronous copy.
-        unsafe { set(name.as_ptr(), new_value.as_ptr()) };
+        unsafe { set(name.as_c_str().as_ptr(), new_value.as_c_str().as_ptr()) };
         Ok(())
     }
 
     /// Register a command for `Plugin::server_command` from an attached callback.
     /// GoldSrc cannot report native command-name collisions through this API.
-    pub fn register_command(&self, input: &CStr) -> Result<(), EngineError> {
+    pub fn register_command(&self, name: &ConsoleName) -> Result<(), EngineError> {
         registration_available()?;
         let callback = self.context.command;
-        let name = name(input)?;
         let engine = engine()?;
         let register = engine.register_command.ok_or(EngineError::Unavailable)?;
         if engine.argc.is_none() || engine.argv.is_none() {
             return Err(EngineError::Unavailable);
         }
-        if exists(engine, &name)? {
+        if exists(engine, name.as_c_str())? {
             return Err(EngineError::AlreadyRegistered);
         }
         registration_available()?;
@@ -361,8 +395,10 @@ pub(crate) unsafe fn read_command() -> Option<Command> {
         Some(value)
     };
     let invoked = argument(0)?;
-    let key = CString::new(invoked.to_bytes().to_ascii_lowercase()).ok()?;
-    let name = COMMANDS.with(|commands| commands.borrow().get(key.as_c_str()).copied())?;
+    let name = ConsoleName::try_from(invoked.as_c_str()).ok()?;
+    if !COMMANDS.with(|commands| commands.borrow().contains(name.as_c_str())) {
+        return None;
+    }
     let args = (1..count).map(argument).collect::<Option<_>>()?;
     Some(Command { name, args })
 }
@@ -447,36 +483,86 @@ mod tests {
 
     #[test]
     fn native_inputs_still_enforce_console_rules() {
-        assert_eq!(name(c"Mixed_Name-7").as_deref(), Ok(c"mixed_name-7"));
-        assert_eq!(name(c"bad name"), Err(EngineError::InvalidName));
-        assert_eq!(name(c"bad\xff"), Err(EngineError::InvalidName));
-        assert_eq!(validate_value(c"\xff"), Ok(()));
+        assert_eq!(
+            ConsoleName::try_from(c"Mixed_Name-7")
+                .as_ref()
+                .map(ConsoleName::as_c_str)
+                .map_err(|error| *error),
+            Ok(c"mixed_name-7")
+        );
+        assert_eq!(
+            ConsoleName::try_from(c"bad name"),
+            Err(EngineError::InvalidName)
+        );
+        assert_eq!(
+            ConsoleName::try_from(c"bad\xff"),
+            Err(EngineError::InvalidName)
+        );
+        assert_eq!(ConsoleName::try_from(c""), Err(EngineError::InvalidName));
+        let maximum = CString::new(vec![b'A'; 63]).unwrap();
+        assert_eq!(
+            ConsoleName::try_from(maximum.as_c_str())
+                .unwrap()
+                .as_c_str()
+                .to_bytes(),
+            &[b'a'; 63]
+        );
+        let oversized = CString::new(vec![b'A'; 64]).unwrap();
+        assert_eq!(
+            ConsoleName::try_from(oversized.as_c_str()),
+            Err(EngineError::InvalidName)
+        );
+    }
+
+    #[test]
+    fn command_exposes_its_normalized_console_name() {
+        let command = Command {
+            name: ConsoleName::try_from(c"RUST_HELLO").unwrap(),
+            args: Vec::new(),
+        };
+        let name: &ConsoleName = command.name();
+        assert_eq!(name.as_c_str(), c"rust_hello");
+    }
+
+    #[test]
+    fn cvar_values_borrow_native_bytes_and_enforce_the_inclusive_limit() {
+        assert_eq!(CvarValue::try_from(c"").unwrap().as_c_str(), c"");
+        let maximum = CString::new(vec![0xff_u8; 1023]).unwrap();
+        let value = CvarValue::try_from(maximum.as_c_str()).unwrap();
+        assert_eq!(value.as_c_str().as_ptr(), maximum.as_ptr());
+        assert_eq!(value.as_c_str().to_bytes(), &[0xff; 1023]);
         let oversized = CString::new(vec![b'x'; 1024]).unwrap();
-        assert_eq!(validate_value(&oversized), Err(EngineError::InvalidValue));
+        assert_eq!(
+            CvarValue::try_from(oversized.as_c_str()),
+            Err(EngineError::InvalidValue)
+        );
     }
 
     #[test]
     fn irreversible_registrations_share_a_bounded_name_budget() {
-        assert!(reserve_name(name(c"Test").unwrap(), true).is_ok());
+        assert!(reserve_name(&ConsoleName::try_from(c"Test").unwrap(), true).is_ok());
         assert_eq!(
-            reserve_name(name(c"test").unwrap(), true),
+            reserve_name(&ConsoleName::try_from(c"test").unwrap(), true),
             Err(EngineError::RegistrationRejected)
         );
         assert_eq!(
-            reserve_name(name(c"TEST").unwrap(), false),
+            reserve_name(&ConsoleName::try_from(c"TEST").unwrap(), false),
             Err(EngineError::AlreadyRegistered)
         );
         for index in 1..MAX_CONSOLE_REGISTRATIONS {
             assert!(
                 reserve_name(
-                    name(&CString::new(format!("test{index}")).unwrap()).unwrap(),
+                    &ConsoleName::try_from(
+                        CString::new(format!("test{index}")).unwrap().as_c_str()
+                    )
+                    .unwrap(),
                     false
                 )
                 .is_ok()
             );
         }
         assert_eq!(
-            reserve_name(name(c"one_more").unwrap(), true),
+            reserve_name(&ConsoleName::try_from(c"one_more").unwrap(), true),
             Err(EngineError::RegistrationLimit)
         );
     }

@@ -9,7 +9,7 @@ mod hooks;
 mod runtime;
 mod trace;
 
-pub use engine::{Command, EngineError, PlayerInfo};
+pub use engine::{Command, ConsoleName, CvarValue, EngineError, PlayerInfo};
 pub use hooks::{HookResult, KeyValueEvent, PostHookResult};
 pub use trace::{
     EntityError, EntityHandle, EntityInfo, EntityKeyValues, EntityKind, EntitySpatial, Hull,
@@ -28,10 +28,10 @@ pub mod prelude {
     #[cfg(feature = "macros")]
     pub use crate::metamod_plugin;
     pub use crate::{
-        Command, Context, EngineError, EntityError, EntityHandle, EntityInfo, EntityKeyValues,
-        EntityKind, EntitySpatial, HookResult, Hull, KeyValueEvent, Metadata, PlayerId, PlayerInfo,
-        PlayerSlot, PlayerUserId, Plugin, PostHookResult, Server, TraceError, TraceMonsters,
-        TraceOptions, TracePlane, TraceResult, export_plugin,
+        Command, ConsoleName, Context, CvarValue, EngineError, EntityError, EntityHandle,
+        EntityInfo, EntityKeyValues, EntityKind, EntitySpatial, HookResult, Hull, KeyValueEvent,
+        Metadata, PlayerId, PlayerInfo, PlayerSlot, PlayerUserId, Plugin, PostHookResult, Server,
+        TraceError, TraceMonsters, TraceOptions, TracePlane, TraceResult, export_plugin,
     };
 }
 
