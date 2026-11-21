@@ -342,7 +342,9 @@ The SDK leaves PE ordinals to the linker.
   A rejected CVar attempt consumes its reservation, so retrying the same
   name cannot allocate another retained record. The native registration
   API returns no ownership or failure status. The SDK keeps submitted
-  storage resident and does not infer ownership from a name lookup.
+  storage resident. Classic Metamod copies the record and strings, while
+  ReHLDS can retain the record and replace the value pointer with engine
+  storage. A successful name lookup establishes presence only.
 - Version reads are capped at 64 bytes, command tokens share a 4,096-byte
   budget, and other native string copies are capped at 4,096 bytes per
   value, including the terminator. Null or over-limit values are treated as
@@ -350,18 +352,29 @@ The SDK leaves PE ordinals to the linker.
   initialized pointer readable through the first NUL or the limit,
   whichever comes first. Argument getters must also preserve the active
   command context unless an observable callback invalidates it.
+  Metamod utility messages are capped at 1,021 bytes to leave room for
+  the terminator and console newline in classic Metamod's formatting
+  buffer. `Server::print` continues to pass its C string directly to the engine.
 - Engine data is read on the server thread. Native edict slots must remain
   readable for their map epoch, and the host must report map transitions
   before discarding the arena. The SDK checks player sessions, edict serials,
-  and map epochs around native calls. It copies strings before making
+  and map epochs around native calls. Player information requires a
+  valid client capacity and the edict serial observed at join, even if
+  a replacement at the same index has not yet produced a player hook.
+  `player_at` and `is_player_current` describe observed hook bookkeeping.
+  It copies strings before making
   another native call. Native return buffers must remain readable until
   that copy completes. Alignment checks can reject malformed inputs, but
   cannot establish that an aligned pointer refers to readable memory. In
   particular, the host must return a current-map edict or null from lookup
-  and tracing, and keep an edict slot allocated while its map is active.
+  and tracing, keep an edict slot allocated while its map is active, and
+  change the slot's serial when it is recycled. A serial that wraps within
+  the same map can make an ancient handle indistinguishable from a newer one.
 - Metamod provides aligned initialized ABI data, valid callback functions,
   and writable hook-result globals through the return of each active
   hook. This includes outer hooks when shutdown is observed reentrantly.
+  Native callbacks must obey the declared calling convention and must not
+  throw or use `longjmp` across Rust frames.
   The SDK revokes engine access on shutdown and defers dropping plugin
   state until its active callback returns. Startup-only loading and
   `PT_NEVER` remain in effect.
@@ -403,6 +416,10 @@ It also checks line and hull tracing, discovery across vacant slots,
 out-of-range lookup, spatial snapshots, and interruption by map changes.
 Rust tests cover identity invalidation, dispatch limits, off-thread dispatch,
 and panic containment during callbacks and cleanup.
+Set `METAMOD_SANITIZE_LOADER=1` on Linux to instrument the C++ loader with
+AddressSanitizer and UndefinedBehaviorSanitizer. This requires the 32-bit
+sanitizer runtimes and leaves the Rust libraries uninstrumented. Leak
+detection is disabled for intentional process-lifetime registrations.
 The Linux script accepts two optional paths for comparing against separate C++
 reference checkouts. Binding generation always uses the submodules.
 

@@ -15,17 +15,21 @@ thread_local! {
     // Keep the counter across deactivation so a new map cannot revive handles.
     static GLOBALS: Cell<*mut EngineGlobals> = const { Cell::new(ptr::null_mut()) };
     static LIMIT: Cell<i32> = const { Cell::new(0) };
+    static CLIENT_LIMIT: Cell<i32> = const { Cell::new(0) };
     static MAP: Cell<(u64, bool)> = const { Cell::new((0, false)) };
 }
 
 /// # Safety
-/// Non-null globals must remain readable on the server thread through shutdown.
+/// Non-null globals must be aligned and kept allocated through shutdown.
+/// The host must initialize both capacities before each
+/// post-activation hook and confine accesses to the server thread.
 pub(crate) unsafe fn set_globals(globals: *mut EngineGlobals) {
     GLOBALS.set(globals);
 }
 
 pub(crate) fn invalidate_map() {
     LIMIT.set(0);
+    CLIENT_LIMIT.set(0);
     let (generation, _) = MAP.get();
     MAP.set((generation, false));
 }
@@ -39,9 +43,17 @@ pub(crate) fn activate_map() {
         if !globals.is_null() {
             // SAFETY: The loader retains initialized globals and this is the
             // owner-thread post-activation hook for the current map.
-            let capacity = unsafe { ptr::addr_of!((*globals).maxEntities).read() };
+            let (capacity, clients) = unsafe {
+                (
+                    ptr::addr_of!((*globals).maxEntities).read(),
+                    ptr::addr_of!((*globals).maxClients).read(),
+                )
+            };
             if (1..=MAX_EDICT_CAPACITY).contains(&capacity) {
                 LIMIT.set(capacity);
+                if (1..capacity).contains(&clients) {
+                    CLIENT_LIMIT.set(clients);
+                }
             }
         }
     } else {
@@ -98,24 +110,17 @@ fn valid_index(index: i32) -> bool {
     (0..LIMIT.get()).contains(&index)
 }
 
-/// # Safety
-/// The index must originate from a player lifecycle hook on the active map.
-pub(crate) unsafe fn tracked_entity(engine: Engine, index: i32) -> Option<EntityHandle> {
+pub(crate) fn tracked_entity(index: i32, serial: i32) -> Option<EntityHandle> {
     let map = active_map()?;
-    if !valid_index(index) {
-        return None;
-    }
-    let lookup = engine.entity?;
-    // SAFETY: This index originated from the current engine edict table.
-    find_entity(|index| unsafe { lookup(index) }, index, map)
-        .ok()
-        .flatten()
+    (1..=CLIENT_LIMIT.get())
+        .contains(&index)
+        .then_some(EntityHandle { index, serial, map })
 }
 
 /// # Safety
 /// For a non-null aligned edict, the host must keep its free and serial
 /// fields initialized and readable for this immediate owner-thread read.
-unsafe fn live_serial(edict: *mut edict_t) -> Option<i32> {
+pub(crate) unsafe fn live_serial(edict: *mut edict_t) -> Option<i32> {
     if edict.is_null() || !edict.is_aligned() {
         return None;
     }
@@ -197,7 +202,10 @@ fn vector(v: raw::Vector) -> [f32; 3] {
     [v.x, v.y, v.z]
 }
 
-fn find_entity(
+/// # Safety
+/// If the map is unchanged on return, `lookup` must return either null
+/// or an edict in that map with readable, initialized identity fields.
+unsafe fn find_entity(
     lookup: impl FnOnce(i32) -> *mut edict_t,
     index: i32,
     map: u64,
@@ -225,8 +233,8 @@ impl Context<'_> {
         if !(0..limit).contains(&index) {
             return Ok(None);
         }
-        // SAFETY: The index lies within the active engine edict table.
-        find_entity(|index| unsafe { lookup(index) }, index, map)
+        // SAFETY: The engine implements the current-map edict lookup contract.
+        unsafe { find_entity(|index| lookup(index), index, map) }
     }
 
     /// Scan the engine-visible edict table in index order. Each handle
@@ -236,8 +244,8 @@ impl Context<'_> {
         let (map, limit, lookup) = discovery()?;
         let mut found = Vec::new();
         for index in 0..limit {
-            // SAFETY: The index lies within the active engine edict table.
-            if let Some(entity) = find_entity(|index| unsafe { lookup(index) }, index, map)? {
+            // SAFETY: The engine implements the current-map edict lookup contract.
+            if let Some(entity) = unsafe { find_entity(|index| lookup(index), index, map) }? {
                 found.push(entity);
             }
         }
@@ -528,7 +536,9 @@ fn trace(
     if active_map() != Some(map) {
         return Err(TraceError::MapChanged);
     }
-    let hit = capture_hit(engine, map, output.pHit);
+    // SAFETY: The host trace returned null or a readable hit edict for
+    // this still-active map. No native call has intervened.
+    let hit = unsafe { capture_hit(engine, map, output.pHit) };
     if active_map() != Some(map) {
         return Err(TraceError::MapChanged);
     }
@@ -548,7 +558,9 @@ fn trace(
     })
 }
 
-fn capture_hit(engine: Engine, map: u64, edict: *mut edict_t) -> Option<EntityHandle> {
+/// # Safety
+/// The trace result's edict must be null or live in the active map arena.
+unsafe fn capture_hit(engine: Engine, map: u64, edict: *mut edict_t) -> Option<EntityHandle> {
     let index_of = engine.index?;
     if LIMIT.get() == 0 {
         return None;
@@ -638,13 +650,38 @@ mod tests {
             assert!(matches!(discovery(), Err(EntityError::Unavailable)));
             let map = active_map().unwrap();
             assert_eq!(
-                find_entity(|_| panic!("invalid index reached FFI"), 0, map),
+                // SAFETY: The fixture lookup never returns any pointer.
+                unsafe { find_entity(|_| panic!("invalid index reached FFI"), 0, map) },
                 Ok(None)
             );
         }
         unsafe { set_globals(ptr::null_mut()) };
         activate_map();
         assert!(!valid_index(0));
+    }
+
+    #[test]
+    fn player_entity_handles_require_a_valid_client_capacity() {
+        let mut globals = EngineGlobals {
+            maxEntities: 8,
+            ..Default::default()
+        };
+        let globals = &raw mut globals;
+        // SAFETY: This fixture stays allocated and owner-thread confined.
+        unsafe {
+            set_globals(globals);
+            for max_clients in [i32::MIN, 0, 8, i32::MAX] {
+                (*globals).maxClients = max_clients;
+                activate_map();
+                assert!(tracked_entity(1, 0).is_none());
+            }
+            (*globals).maxClients = 7;
+            activate_map();
+            assert!(tracked_entity(7, 42).is_some_and(|handle| handle.serial == 42));
+            assert!(tracked_entity(8, 42).is_none());
+            set_globals(ptr::null_mut());
+        }
+        invalidate_map();
     }
 
     #[test]

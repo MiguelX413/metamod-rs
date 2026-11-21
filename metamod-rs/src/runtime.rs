@@ -208,6 +208,23 @@ pub struct Server<'context, 'callback> {
     pub(crate) context: &'context Context<'callback>,
 }
 
+// Classic Win32 Metamod uses _vsnprintf, which can leave its 1,024-byte
+// buffer unterminated. Leave room for the console utility's newline.
+const MAX_UTILITY_MESSAGE: usize = 1021;
+
+fn utility_message<'a>(
+    message: &'a CStr,
+    buffer: &'a mut [u8; MAX_UTILITY_MESSAGE + 1],
+) -> &'a CStr {
+    let bytes = message.to_bytes();
+    if bytes.len() <= MAX_UTILITY_MESSAGE {
+        return message;
+    }
+    buffer[..MAX_UTILITY_MESSAGE].copy_from_slice(&bytes[..MAX_UTILITY_MESSAGE]);
+    buffer[MAX_UTILITY_MESSAGE] = 0;
+    CStr::from_bytes_with_nul(buffer).expect("a C string payload contains no NUL")
+}
+
 impl<'callback> Context<'callback> {
     pub(crate) fn new(
         _: &'callback (),
@@ -242,11 +259,13 @@ impl<'callback> Context<'callback> {
     }
 
     /// Write a message through Metamod's server log utility when available.
+    /// Messages exceeding 1,021 bytes are truncated to fit classic Metamod.
     pub fn log(&self, message: &CStr) {
         self.write(self.log, message);
     }
 
     /// Print directly to the server console through Metamod.
+    /// Messages exceeding 1,021 bytes are truncated to fit classic Metamod.
     pub fn print_console(&self, message: &CStr) {
         self.write(self.console, message);
     }
@@ -255,7 +274,10 @@ impl<'callback> Context<'callback> {
         if crate::__ffi::engine_available()
             && let Some(log) = callback
         {
+            let mut buffer = [0; MAX_UTILITY_MESSAGE + 1];
+            let message = utility_message(message, &mut buffer);
             // SAFETY: The loader supplied the callback and plugin ID.
+            // The C varargs match the format and message lives through the call.
             unsafe { log(self.id, c"%s".as_ptr(), message.as_ptr()) };
         }
     }
@@ -278,6 +300,23 @@ impl Server<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utility_messages_leave_room_for_a_newline_in_classic_metamod() {
+        let long = std::ffi::CString::new(vec![0xff; MAX_UTILITY_MESSAGE + 1]).unwrap();
+        let mut storage = [b'x'; MAX_UTILITY_MESSAGE + 1];
+        let truncated = utility_message(&long, &mut storage);
+        assert_eq!(
+            truncated.to_bytes(),
+            &long.to_bytes()[..MAX_UTILITY_MESSAGE]
+        );
+        assert_eq!(truncated.to_bytes_with_nul().last(), Some(&0));
+        let short = c"short";
+        assert_eq!(
+            utility_message(short, &mut storage).as_ptr(),
+            short.as_ptr()
+        );
+    }
     use std::num::IntErrorKind;
 
     fn check_player_number<T, E>()

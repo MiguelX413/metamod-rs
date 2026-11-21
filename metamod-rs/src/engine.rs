@@ -24,7 +24,10 @@ macro_rules! engine_callbacks {
         }
 
         impl Engine {
-            /// The loader's table must have readable, initialized callback slots.
+            /// # Safety
+            /// The loader's table must have aligned, readable, initialized
+            /// slots for each field read here. Non-null callbacks must match
+            /// the declared ABI and remain callable on the server thread.
             pub(crate) unsafe fn read(table: *mut EngineFunctions) -> Self {
                 // SAFETY: Copy just the supplied slots without borrowing foreign memory.
                 unsafe { Self { $($field: ptr::addr_of!((*table).$native).read(),)+ } }
@@ -300,9 +303,10 @@ impl Server<'_, '_> {
             return Err(EngineError::AlreadyRegistered);
         }
         registration_available()?;
-        // GoldSrc may retain the structure and name, and may replace the
-        // string field with storage allocated by the engine. Never reclaim
-        // these allocations or read the structure back as Rust-owned data.
+        // Classic Metamod clones these inputs. ReHLDS can link the record
+        // itself into its CVar list and replace the string field with engine
+        // storage. The portable ABI does not tell us which path handled the
+        // registration. Never reclaim the inputs or read back the record.
         // Reserve before crossing FFI. Even a failed or interrupted
         // attempt may have handed the name and CVar storage to the host.
         let name = reserve_name(name, true)?;
@@ -332,6 +336,8 @@ impl Server<'_, '_> {
         // SAFETY: Copy the synchronous engine result before making another native call.
         let result = unsafe { get(name.as_c_str().as_ptr()) };
         available()?;
+        // SAFETY: The returned C string remains readable until the next
+        // native call. Checking availability above only reads TLS.
         Ok(unsafe { copy_string(result, MAX_ENGINE_STRING) })
     }
 
@@ -430,12 +436,15 @@ pub(crate) unsafe fn read_command() -> Option<Command> {
     }
     let mut remaining = 4096usize;
     let mut argument = |index| {
-        if READING_COMMAND.get() != Some(false) || !__ffi::engine_available() {
+        if READING_COMMAND.get() != Some(false) || !__ffi::registration_available() {
             return None;
         }
         // SAFETY: Each index is within argc. Copy before the next native call.
         let value = unsafe { argv(index) };
-        if value.is_null() || READING_COMMAND.get() != Some(false) || !__ffi::engine_available() {
+        if value.is_null()
+            || READING_COMMAND.get() != Some(false)
+            || !__ffi::registration_available()
+        {
             return None;
         }
         // SAFETY: The engine's token remains live until the next native call.
@@ -457,11 +466,11 @@ impl Context<'_> {
     /// owns its strings, and no engine entity pointer escapes the lookup.
     pub fn player_info(&self, id: PlayerId) -> Option<PlayerInfo> {
         let engine = __ffi::engine()?;
-        if !self.is_player_current(id) {
+        let (current, serial) = __ffi::player_session(id.slot())?;
+        if current != id {
             return None;
         }
-        // SAFETY: The current session's index originated in a native player hook.
-        let handle = unsafe { crate::trace::tracked_entity(engine, id.slot().get()) }?;
+        let handle = crate::trace::tracked_entity(id.slot().get(), serial)?;
         let lookup = || {
             if !self.is_player_current(id) {
                 return None;
@@ -485,6 +494,8 @@ impl Context<'_> {
             if !self.is_player_current(id) || !unsafe { handle.still_matches(edict) } {
                 return None;
             }
+            // SAFETY: No native call has run since the getter returned a
+            // current-session auth string or null.
             unsafe { copy_string(result, MAX_ENGINE_STRING) }
         } else {
             None

@@ -27,6 +27,9 @@ static bool trace_transition;
 static const char *args[] = {"RUST_HELLO", nullptr};
 static bool reenter_argv;
 static bool expire_player;
+static bool reuse_player_during_lookup;
+static bool expect_reused_player_fallback;
+static int userid_reads;
 
 static cvar_t *find_cvar(const char *name) {
     return registered_cvar && std::strcmp(name, registered_cvar->name) == 0 ? registered_cvar : nullptr;
@@ -84,6 +87,10 @@ static edict_t *entity_of_index(int index) {
     }
     if (index == 0) return &world;
     if (index == 5) return &vacant;
+    if (index == 7 && reuse_player_during_lookup) {
+        reuse_player_during_lookup = false;
+        ++player.serialnumber;
+    }
     return index == 7 ? &player : nullptr;
 }
 
@@ -103,6 +110,7 @@ static int engine_user_id = 42;
 
 static int player_userid(edict_t *edict) {
     assert(edict == &player);
+    ++userid_reads;
     return engine_user_id;
 }
 
@@ -138,6 +146,12 @@ static int index_of_edict(const edict_t *edict) {
 }
 
 static void server_print(const char *message) {
+    if (expect_reused_player_fallback) {
+        assert(!reuse_player_during_lookup);
+        assert(std::strcmp(message, "Hello, player in slot 7!\n") == 0);
+        expect_reused_player_fallback = false;
+        return;
+    }
     if (std::strncmp(message, "Map classname: ", 15) == 0) {
         assert(engine_demo && keyvalue_logs < 2);
         assert(logged == (keyvalue_logs == 0 ? 1 : 4));
@@ -250,6 +264,7 @@ int main(int argc, char **argv) {
     engine.pfnGetPlayerAuthId = player_authid;
     globalvars_t engine_globals{};
     engine_globals.maxEntities = 8;
+    engine_globals.maxClients = 7;
     player.v.origin.x = 1;
     player.v.origin.y = 2;
     player.v.origin.z = 3;
@@ -355,6 +370,11 @@ int main(int argc, char **argv) {
         globals.mres = MRES_UNSET;
         post_hooks.pfnClientPutInServer(nullptr);
         assert(logged == 4 && globals.mres == MRES_IGNORED);
+        const int reads_before_reuse = userid_reads;
+        reuse_player_during_lookup = true;
+        expect_reused_player_fallback = true;
+        post_hooks.pfnClientPutInServer(&player);
+        assert(!expect_reused_player_fallback && userid_reads == reads_before_reuse);
         globals.mres = MRES_UNSET;
         engine_user_id = -1;
         post_hooks.pfnClientPutInServer(&player);

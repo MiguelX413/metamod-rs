@@ -1,3 +1,5 @@
+#![deny(unsafe_op_in_unsafe_fn)]
+
 use proc_macro::TokenStream;
 use quote::quote;
 use std::{env, ffi::CString, fs, path::PathBuf};

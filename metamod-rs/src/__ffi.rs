@@ -1,5 +1,4 @@
 //! Implementation details for the export macro.
-#![deny(unsafe_op_in_unsafe_fn)]
 
 pub use metamod_sys::*;
 
@@ -58,19 +57,19 @@ enum Event {
 const MAX_EVENTS_PER_DISPATCH: usize = 4096;
 
 struct Events {
-    players: HashMap<PlayerSlot, PlayerId>,
+    players: HashMap<PlayerSlot, (PlayerId, i32)>,
     serial: u64,
     pending: VecDeque<Event>,
     submitted: usize,
 }
 
 impl Events {
-    fn join(&mut self, slot: PlayerSlot) -> Option<PlayerId> {
+    fn join(&mut self, slot: PlayerSlot, edict_serial: i32) -> Option<PlayerId> {
         self.players.remove(&slot);
         let serial = NonZeroU64::new(self.serial.checked_add(1)?)?;
         self.serial = serial.get();
         let player = PlayerId::new(slot, serial);
-        self.players.insert(slot, player);
+        self.players.insert(slot, (player, edict_serial));
         Some(player)
     }
 }
@@ -118,6 +117,10 @@ pub(crate) fn registration_available() -> bool {
 }
 
 pub(crate) fn player_at(slot: PlayerSlot) -> Option<PlayerId> {
+    player_session(slot).map(|(id, _)| id)
+}
+
+pub(crate) fn player_session(slot: PlayerSlot) -> Option<(PlayerId, i32)> {
     if !engine_available() {
         return None;
     }
@@ -201,8 +204,10 @@ fn compatible(version: &CStr) -> bool {
 /// # Safety
 /// The version must be readable up to its NUL or 64 bytes. The utility
 /// slots must be aligned and initialized, the output aligned and writable,
-/// and the metadata must remain live for the module lifetime. Metamod
-/// must invoke query after the engine handoff and on the same server thread.
+/// and the metadata must remain live for the module lifetime. Its strings
+/// must be valid for host reads. Non-null utility callbacks must be valid
+/// for the plugin ID and callable through shutdown. Metamod must invoke
+/// query after the engine handoff and on the same server thread.
 pub unsafe fn query(
     version: *const c_char,
     out: *mut *mut PluginInfo,
@@ -235,6 +240,7 @@ pub unsafe fn query(
             // SAFETY: The utility table is readable and the output is writable.
             let log = unsafe { ptr::addr_of!((*utilities).pfnLogMessage).read() };
             let console = unsafe { ptr::addr_of!((*utilities).pfnLogConsole).read() };
+            // SAFETY: This is the loader's writable output slot.
             unsafe { out.write(id) };
             state.set(State::Queried(Services { id, log, console }));
             1
@@ -313,6 +319,9 @@ fn make_context<P: Plugin>(scope: &(), services: Services) -> Context<'_> {
     )
 }
 
+/// # Safety
+/// Non-null aligned pointers must designate a writable output table and
+/// an initialized writable version integer respectively.
 unsafe fn write_hooks<T>(table: *mut T, version: *mut c_int, expected: c_int, hooks: T) -> c_int {
     if wrong_thread()
         || table.is_null()
@@ -613,9 +622,11 @@ fn reset_players() {
     EVENTS.with(|events| events.borrow_mut().players.clear());
 }
 
-fn player_slot(edict: *mut edict_t) -> Option<PlayerSlot> {
+/// # Safety
+/// A non-null aligned edict must be valid for the native index lookup.
+unsafe fn player_slot(edict: *mut edict_t) -> Option<PlayerSlot> {
     let index = ENGINE.get().index?;
-    if edict.is_null() || SHUTDOWN.get() {
+    if edict.is_null() || !edict.is_aligned() || SHUTDOWN.get() {
         return None;
     }
     if INDEX_LOOKUP.get().is_some() {
@@ -636,6 +647,12 @@ fn player_slot(edict: *mut edict_t) -> Option<PlayerSlot> {
 
 unsafe extern "C" fn server_command<P: Plugin>() {
     let _ = contained(|| {
+        if wrong_thread() {
+            return;
+        }
+        // Invalidate an outer snapshot even if registration or dispatch
+        // has since been disabled. The command buffer may have changed.
+        engine::invalidate_command_read();
         // Native commands do not own a Metamod hook-result slot.
         // SAFETY: The engine invoked this trampoline with live argument storage.
         if registration_available()
@@ -712,8 +729,12 @@ unsafe extern "C" fn server_deactivate<P: Plugin>() {
 
 unsafe extern "C" fn player_join<P: Plugin>(edict: *mut edict_t) {
     hook(|| {
-        if let Some(slot) = player_slot(edict)
-            && let Some(player) = EVENTS.with(|events| events.borrow_mut().join(slot))
+        // SAFETY: The post hook supplies the live edict for this client.
+        // Capture its serial before the index callback can reenter the host.
+        if !SHUTDOWN.get()
+            && let Some(serial) = unsafe { crate::trace::live_serial(edict) }
+            && let Some(slot) = unsafe { player_slot(edict) }
+            && let Some(player) = EVENTS.with(|events| events.borrow_mut().join(slot, serial))
         {
             submit::<P>(Event::Join(player));
         }
@@ -722,8 +743,10 @@ unsafe extern "C" fn player_join<P: Plugin>(edict: *mut edict_t) {
 
 unsafe extern "C" fn player_disconnect<P: Plugin>(edict: *mut edict_t) {
     hook(|| {
-        if let Some(slot) = player_slot(edict)
-            && let Some(player) = EVENTS.with(|events| events.borrow_mut().players.remove(&slot))
+        // SAFETY: The pre hook supplies the edict being disconnected.
+        if let Some(slot) = unsafe { player_slot(edict) }
+            && let Some((player, _)) =
+                EVENTS.with(|events| events.borrow_mut().players.remove(&slot))
         {
             submit::<P>(Event::Disconnect(player));
         }
@@ -982,7 +1005,7 @@ mod tests {
                 self.trace.push("frame");
                 let slot = const { PlayerSlot::new(7).unwrap() };
                 let player = EVENTS
-                    .with(|events| events.borrow_mut().join(slot))
+                    .with(|events| events.borrow_mut().join(slot, 0))
                     .unwrap();
                 assert!(ctx.is_player_current(player));
                 // SAFETY: These synthetic hooks run on the attached thread.
@@ -1049,24 +1072,24 @@ mod tests {
     fn session_ids_expire_on_disconnect_slot_reuse_and_map_boundaries() {
         let slot = const { PlayerSlot::new(7).unwrap() };
         let first = EVENTS
-            .with(|events| events.borrow_mut().join(slot))
+            .with(|events| events.borrow_mut().join(slot, 0))
             .unwrap();
         assert_eq!(player_at(slot), Some(first));
         let ended = EVENTS.with(|events| events.borrow_mut().players.remove(&slot));
-        assert_eq!(ended, Some(first));
+        assert_eq!(ended, Some((first, 0)));
         assert_eq!(player_at(slot), None);
         let second = EVENTS
-            .with(|events| events.borrow_mut().join(slot))
+            .with(|events| events.borrow_mut().join(slot, 0))
             .unwrap();
         assert_ne!(first, second);
         reset_players();
         assert_eq!(player_at(slot), None);
         let third = EVENTS
-            .with(|events| events.borrow_mut().join(slot))
+            .with(|events| events.borrow_mut().join(slot, 0))
             .unwrap();
         assert_ne!(second, third);
         let replacement = EVENTS
-            .with(|events| events.borrow_mut().join(slot))
+            .with(|events| events.borrow_mut().join(slot, 0))
             .unwrap();
         assert_ne!(third, replacement);
         assert_eq!(player_at(slot), Some(replacement));

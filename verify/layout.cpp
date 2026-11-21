@@ -75,6 +75,7 @@ int main() {
     std::printf("trace_size %zu\n", sizeof(TraceResult));
     std::printf("edict_size %zu\n", sizeof(edict_t));
     std::printf("spatial_maxEntities %zu\n", offsetof(globalvars_t, maxEntities));
+    std::printf("spatial_maxClients %zu\n", offsetof(globalvars_t, maxClients));
     std::printf("spatial_v %zu\n", offsetof(edict_t, v));
     std::printf("spatial_origin %zu\n", offsetof(entvars_t, origin));
     std::printf("spatial_angles %zu\n", offsetof(entvars_t, angles));

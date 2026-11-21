@@ -1,4 +1,5 @@
 //! Startup-only stateful GoldSrc Metamod plugins with typed hooks.
+#![deny(unsafe_op_in_unsafe_fn)]
 
 use std::ffi::CStr;
 

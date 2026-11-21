@@ -180,6 +180,10 @@ fn main() {
         "spatial_maxEntities {}",
         offset_of!(raw::globalvars_t, maxEntities)
     );
+    println!(
+        "spatial_maxClients {}",
+        offset_of!(raw::globalvars_t, maxClients)
+    );
     println!("spatial_v {}", offset_of!(raw::edict_t, v));
     println!("spatial_origin {}", offset_of!(raw::entvars_t, origin));
     println!("spatial_angles {}", offset_of!(raw::entvars_t, angles));

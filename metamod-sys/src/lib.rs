@@ -1,6 +1,7 @@
 //! Metamod ABI generated from the pinned upstream headers at build time.
 //! See the repository's licensing notes.
 #![no_std]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 use core::ffi::{CStr, c_int};
 
