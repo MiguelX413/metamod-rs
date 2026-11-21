@@ -156,8 +156,12 @@ fn contained<T>(callback: impl FnOnce() -> T) -> Option<T> {
     match catch_unwind(AssertUnwindSafe(callback)) {
         Ok(value) => Some(value),
         Err(payload) => {
-            // A custom panic payload can itself panic during Drop.
-            std::mem::forget(payload);
+            // The original unwind has ended. Release payload-owned resources
+            // even on retryable attach failures. If Drop panics, retain only
+            // the secondary payload rather than risk an unbounded panic chain.
+            if let Err(secondary) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
+                std::mem::forget(secondary);
+            }
             None
         }
     }
@@ -1154,6 +1158,15 @@ mod tests {
 
         thread_local! {
             static DROPS: Cell<usize> = const { Cell::new(0) };
+            static PAYLOAD_DROPS: Cell<usize> = const { Cell::new(0) };
+        }
+
+        struct Payload;
+        impl Drop for Payload {
+            fn drop(&mut self) {
+                PAYLOAD_DROPS.set(PAYLOAD_DROPS.get() + 1);
+                panic!("panic payload destructor failed");
+            }
         }
 
         impl Plugin for TestPlugin {
@@ -1161,7 +1174,7 @@ mod tests {
 
             fn initialize(&mut self, _: &mut Context<'_>) -> bool {
                 if DROPS.get() == 0 {
-                    panic!("initialization failed");
+                    std::panic::panic_any(Payload);
                 }
                 false
             }
@@ -1184,6 +1197,7 @@ mod tests {
                 0
             );
             assert_eq!(DROPS.get(), drops);
+            assert_eq!(PAYLOAD_DROPS.get(), 1);
             assert!(matches!(STATE.get(), State::Queried(_)));
             assert!(functions.pfnGetEntityAPI2.is_none());
         }

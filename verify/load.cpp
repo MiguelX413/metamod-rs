@@ -12,6 +12,7 @@ static plugin_info_t *info;
 static meta_globals_t globals{};
 static DLL_FUNCTIONS hooks{};
 static DLL_FUNCTIONS post_hooks{};
+static NEW_DLL_FUNCTIONS new_hooks{};
 static edict_t player{}, world{}, vacant{};
 static bool discovery_transition;
 static int logged;
@@ -24,6 +25,8 @@ static void (*command)();
 static void (*trace_command)();
 static void (*entities_command)();
 static bool trace_transition;
+static bool shutdown_from_trace;
+static int trace_index_lookups;
 static const char *args[] = {"RUST_HELLO", nullptr};
 static bool reenter_argv;
 static bool expire_player;
@@ -129,7 +132,11 @@ static void trace_line(const float *start, const float *end, int mode, edict_t *
     out->vecEndPos.z = 0;
     out->vecPlaneNormal.z = 1;
     out->pHit = &player;
-    if (trace_transition) {
+    if (shutdown_from_trace) {
+        shutdown_from_trace = false;
+        new_hooks.pfnGameShutdown();
+        assert(globals.mres == MRES_IGNORED);
+    } else if (trace_transition) {
         hooks.pfnServerDeactivate();
     }
 }
@@ -142,6 +149,7 @@ static void trace_hull(const float *start, const float *end, int mode, int hull,
 
 static int index_of_edict(const edict_t *edict) {
     assert(edict == &player);
+    ++trace_index_lookups;
     return 7;
 }
 
@@ -317,7 +325,6 @@ int main(int argc, char **argv) {
     assert(post_hooks.pfnClientPutInServer && !post_hooks.pfnClientDisconnect);
     assert(hooks.pfnClientDisconnect && !hooks.pfnClientPutInServer);
     assert(post_hooks.pfnServerActivate && hooks.pfnServerActivate && hooks.pfnServerDeactivate);
-    NEW_DLL_FUNCTIONS new_hooks{};
     version = 0;
     assert(functions.pfnGetNewDLLFunctions && !functions.pfnGetNewDLLFunctions(&new_hooks, &version));
     assert(version == NEW_DLL_FUNCTIONS_VERSION && !new_hooks.pfnGameShutdown);
@@ -430,6 +437,17 @@ int main(int argc, char **argv) {
     assert(globals.mres == MRES_IGNORED);
     assert(!detach(PT_ANYTIME, PNL_COMMAND));
     assert(!detach(PT_ANYTIME, PNL_CMD_FORCED));
+    if (engine_demo) {
+        // Shut down while a Rust command owns the plugin and is awaiting a
+        // trace result. The hit storage stays valid in this fixture.
+        hooks.pfnServerActivate(nullptr, 0, 0);
+        post_hooks.pfnServerActivate(nullptr, 0, 0);
+        const int previous_lookups = trace_index_lookups;
+        shutdown_from_trace = true;
+        trace_command();
+        assert(!shutdown_from_trace && trace_index_lookups == previous_lookups);
+        assert(logged == expected_logs);
+    }
     globals.mres = MRES_UNSET;
     new_hooks.pfnGameShutdown();
     assert(globals.mres == MRES_IGNORED);

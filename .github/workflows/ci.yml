@@ -68,6 +68,35 @@ jobs:
           METAMOD_SANITIZE_LOADER: '1'
         run: bash verify/linux-i686.sh
 
+  rust-asan:
+    name: Rust AddressSanitizer (Linux x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          submodules: true
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: cargo-registry-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-v1-${{ runner.os }}-${{ runner.arch }}-
+      - name: Install libclang and nightly Rust
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev
+          rustup toolchain install nightly --profile minimal --target x86_64-unknown-linux-gnu
+      - name: Run workspace library tests with AddressSanitizer
+        env:
+          RUSTFLAGS: -Zsanitizer=address
+          # FFI registration fixtures intentionally retain host-visible storage.
+          ASAN_OPTIONS: detect_leaks=0
+        run: cargo +nightly test --locked --workspace --lib --target x86_64-unknown-linux-gnu
+
   windows-i686:
     name: Win32 ABI and loader
     runs-on: windows-2022

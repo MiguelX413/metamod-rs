@@ -319,7 +319,9 @@ engine-demo shows explicit attribute arguments.
 - Construction or initialization panic fails attach. A rejected or failed
   instance is dropped with separate panic containment. A hook panic discards
   pending notifications and disables user hooks while SDK bookkeeping and
-  hook results continue. Use the default unwind strategy. Aborting panics,
+  hook results continue. Panic payloads are dropped under a separate unwind
+  guard. If a payload destructor panics, its secondary payload is retained
+  to stop repeated destructor panics. Use the default unwind strategy. Aborting panics,
   double panics, panics in panic hooks, and foreign faults can terminate the
   server.
 - Plugins load at startup and advertise `PT_NEVER`, refusing detach. Use
@@ -373,6 +375,10 @@ The SDK leaves PE ordinals to the linker.
 - Metamod provides aligned initialized ABI data, valid callback functions,
   and writable hook-result globals through the return of each active
   hook. This includes outer hooks when shutdown is observed reentrantly.
+  The lag-compensation post hook reads an original result only when the
+  host supplies a non-null, aligned pointer to an initialized C `int`
+  and the original call was not superceded. It copies the value before
+  invoking user code.
   Native callbacks must obey the declared calling convention and must not
   throw or use `longjmp` across Rust frames.
   The SDK revokes engine access on shutdown and defers dropping plugin
@@ -421,6 +427,19 @@ loader with AddressSanitizer and UndefinedBehaviorSanitizer. Set the same
 variable when running the Linux script locally. This requires the 32-bit
 sanitizer runtimes and leaves the Rust libraries uninstrumented. Leak
 detection is disabled for intentional process-lifetime registrations.
+The separate Linux x86_64 CI job runs Rust library tests with nightly
+AddressSanitizer. It instruments the target Rust crates and uses the
+prebuilt standard library. Run the same check locally with:
+
+```sh
+ASAN_OPTIONS=detect_leaks=0 RUSTFLAGS=-Zsanitizer=address \
+  cargo +nightly test --locked --workspace --lib --target x86_64-unknown-linux-gnu
+```
+
+Leak detection is disabled for those tests because registration fixtures
+intentionally retain host-visible storage. Address checks still fail the
+job. This 64-bit test run exercises Rust FFI code with test fixtures.
+The x86 platform jobs cover the shipping ABI and native loader.
 The Linux script accepts two optional paths for comparing against separate C++
 reference checkouts. Binding generation always uses the submodules.
 
