@@ -421,10 +421,13 @@ mod tests {
     fn player_user_id_accepts_only_positive_engine_values() {
         for invalid in [i32::MIN, -1, 0] {
             assert_eq!(PlayerUserId::new(invalid), None);
+            assert!(PlayerUserId::try_from(invalid).is_err());
         }
         for valid in [1, 42, i32::MAX] {
             let id = PlayerUserId::new(valid).unwrap();
             assert_eq!(id.get(), valid);
+            assert_eq!(PlayerUserId::try_from(valid), Ok(id));
+            assert_eq!(i32::from(id), valid);
             assert_eq!(id.to_string(), valid.to_string());
         }
     }

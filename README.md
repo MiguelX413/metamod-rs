@@ -118,7 +118,8 @@ the invocation.
 `ctx.player_info(id)` returns an owned snapshot for a currently observed
 session. Its `Option<PlayerUserId>` contains the positive server-assigned
 GoldSrc user ID when available. `PlayerUserId` is distinct from a reusable
-`PlayerSlot` and a map-scoped `PlayerId`. The snapshot also contains the
+`PlayerSlot` and a map-scoped `PlayerId`. Use `PlayerUserId::try_from(raw)`
+to validate an integer and `i32::from(user_id)` to recover it. The snapshot also contains the
 authentication string when available. It returns `None` for a stale ID or a missing entity lookup and
 revalidates the session around engine calls. An authentication string can
 contain an engine marker such as a pending or bot value. Treat it as engine

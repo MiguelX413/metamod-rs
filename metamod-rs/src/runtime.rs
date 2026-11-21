@@ -84,6 +84,32 @@ impl fmt::Display for PlayerUserId {
     }
 }
 
+/// The supplied GoldSrc user ID was zero or negative.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidPlayerUserId(i32);
+
+impl fmt::Display for InvalidPlayerUserId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "player user ID must be positive, got {}", self.0)
+    }
+}
+
+impl std::error::Error for InvalidPlayerUserId {}
+
+impl TryFrom<i32> for PlayerUserId {
+    type Error = InvalidPlayerUserId;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        Self::new(value).ok_or(InvalidPlayerUserId(value))
+    }
+}
+
+impl From<PlayerUserId> for i32 {
+    fn from(id: PlayerUserId) -> Self {
+        id.get()
+    }
+}
+
 /// A player session observed by this plugin, scoped to a map.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PlayerId {

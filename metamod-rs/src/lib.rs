@@ -16,7 +16,9 @@ pub use trace::{
     TraceError, TraceMonsters, TraceOptions, TracePlane, TraceResult,
 };
 
-pub use runtime::{Context, InvalidPlayerSlot, PlayerId, PlayerSlot, PlayerUserId, Server};
+pub use runtime::{
+    Context, InvalidPlayerSlot, InvalidPlayerUserId, PlayerId, PlayerSlot, PlayerUserId, Server,
+};
 
 #[cfg(feature = "macros")]
 pub use metamod_macros::metamod_plugin;
